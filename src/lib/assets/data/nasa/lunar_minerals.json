@@ -1,0 +1,30 @@
+[
+	{
+		"id": "min_01",
+		"name": "Ilmenite",
+		"type": "metal",
+		"description": "Titanium-iron oxide mineral, crucial for extracting oxygen.",
+		"abundancePct": 15.0
+	},
+	{
+		"id": "min_02",
+		"name": "Helium-3",
+		"type": "isotope",
+		"description": "Rare isotope deposited by solar wind, potential fusion fuel.",
+		"abundancePct": 0.01
+	},
+	{
+		"id": "min_03",
+		"name": "Silicon",
+		"type": "non-metal",
+		"description": "Abundant in regolith, useful for solar panel construction.",
+		"abundancePct": 20.0
+	},
+	{
+		"id": "min_04",
+		"name": "Iron",
+		"type": "metal",
+		"description": "Native iron particles found in lunar soil from meteor impacts.",
+		"abundancePct": 10.0
+	}
+]

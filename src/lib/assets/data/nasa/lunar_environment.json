@@ -1,0 +1,15 @@
+{
+	"thermal": {
+		"dayPeakC": 120,
+		"nightLowC": -130,
+		"shadowedCraterLowC": -250
+	},
+	"radiation": {
+		"galacticCosmicRaysMSvPerDay": 1.3,
+		"solarParticleEventMultiplier": 50
+	},
+	"solarIrradiance": {
+		"wattsPerSquareMeter": 1361,
+		"dustDegradationFactorPerDay": 0.02
+	}
+}

@@ -1,0 +1,56 @@
+src/
+├── config/
+│   ├── game.config.ts            # Global constants (seed, 3-day transit speed, max 2 meteor strikes)
+│   ├── nasa-datasets.config.ts   # Mapped endpoints & fallback schemas from data.nasa.gov/dataset/
+│   └── survival.config.ts        # 120L water tank rates, O2/hunger decay, hidden radiation timer thresholds
+├── core/
+│   ├── engine/
+│   │   ├── SceneManager.ts       # WebGLRenderer, memory disposal on blackout transitions
+│   │   ├── PhysicsWorld.ts       # @dimforge/rapier3d-compact initialization & fixed-timestep loop
+│   │   └── AudioManager.ts       # Geiger beep synthesizer, alarms, thruster SFX
+│   ├── rng/
+│   │   └── mulberry32.ts          # Deterministic PRNG for pre-flight anomalies, samples & meteor events
+│   └── state/
+│       └── missionStore.svelte.ts # Global reactive state (current phase, resources, mission flags)
+├── data/
+│   └── nasa/
+│       ├── atmosphere_layers.json # NASA Earth atmospheric boundary & telemetry data
+│       ├── lunar_minerals.json    # NASA lunar regolith metals/non-metals (Ilmenite, He-3, Si, Fe)
+│       └── lunar_environment.json # LRO thermal swings, solar irradiance & radiation baselines
+├── features/
+│   ├── 01-earth-locker-room/
+│   │   ├── LockerRoomScene.ts    # 3D room, utility crates, spacesuit rack, terminal mesh
+│   │   ├── NpcGuides.ts          # 2 NPCs (NPC-1: Ship Stats prompt, NPC-2: Suit/Supplies prompt)
+│   │   ├── LockerRoomHUD.svelte  # Interactive ship telemetry screen & suit inspection checklist
+│   │   └── locker.config.ts      # Required utility items & inspection triggers
+│   ├── 02-cockpit-launch/
+│   │   ├── CockpitScene.ts       # Interior cockpit, interactive switches, Earth launchpad exterior
+│   │   ├── LaunchPhysics.ts      # Thrust curve, fuel burn, atmospheric layer altitude tracker
+│   │   ├── PreflightHUD.svelte   # Mission 1 utility lock (fuel, O2, battery, coolant) & ascent telemetry
+│   │   └── launch.config.ts      # Atmospheric layer thresholds (Troposphere -> Exosphere)
+│   ├── 03-cislunar-transit/
+│   │   ├── TransitCutscene.ts    # Scene memory purge (blackout), ISS flyby, Moon approach alignment
+│   │   ├── TransitHUD.svelte     # 3-day counter, distance tracker, rotating NASA space facts
+│   │   └── transit.config.ts     # Space facts dataset & cutscene pacing
+│   ├── 04-lunar-landing/
+│   │   ├── LunarDescentScene.ts  # Pre-aligned spacecraft, lunar terrain, landing pad beacon
+│   │   ├── AimAssistController.ts # Kid-friendly PID velocity damper & landing cone auto-aligner
+│   │   ├── LandingHUD.svelte     # Descent rate, fuel gauge, target lock indicator
+│   │   └── landing.config.ts     # Assist strength, safe touchdown velocity thresholds
+│   ├── 05-lunar-outpost/
+│   │   ├── OutpostBuilder.ts     # Modular 3D base: Control Room, Solar Array, 120L Tank, Toilets, Greenhouse
+│   │   ├── ResourceEngine.ts     # Closed-loop simulation (Toilets + Power -> 120L Water -> Greenhouse)
+│   │   ├── SolarMaintenance.ts   # Panel degradation (dust, radiation, temp swings, meteors) & repair
+│   │   ├── ControlRoomHUD.svelte # Earth Mission Control uplink (order supplies, receive sample briefs)
+│   │   └── outpost.config.ts     # Power draw per module, water recycling efficiency, repair rates
+│   ├── 06-eva-samples/
+│   │   ├── PlayerController.ts   # Rapier3D low-gravity (1.62 m/s²) movement & suit radiation timer
+│   │   ├── SampleExtractor.ts    # Spawn & scan NASA metal/non-metal nodes guided by the 2 NPCs
+│   │   ├── SuitHUD.svelte        # O2, hunger, radiation bar + escalating Geiger audio alert
+│   │   └── samples.config.ts     # Target minerals, scan durations, EVA suit limits
+│   └── 07-meteor-defense/
+│       ├── MeteorEventManager.ts # Random trigger (max 2x), early alarm, safe impact zones (protects Control Room)
+│       ├── LaserTurret.ts        # 20–30s manned turret controls, raycast laser beams, meteor destruction
+│       ├── TurretHUD.svelte      # Countdown timer, incoming warning banner, crosshair
+│       └── meteor.config.ts      # Spawn rates, protected bounding boxes, panel damage values
+└── App.svelte                    # Root viewport mounting Three.js canvas + active feature HUD

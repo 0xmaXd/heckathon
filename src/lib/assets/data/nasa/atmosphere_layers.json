@@ -1,0 +1,37 @@
+[
+	{
+		"name": "Troposphere",
+		"altitudeStartKm": 0,
+		"altitudeEndKm": 12,
+		"densityModifier": 1.0,
+		"temperatureC": 15
+	},
+	{
+		"name": "Stratosphere",
+		"altitudeStartKm": 12,
+		"altitudeEndKm": 50,
+		"densityModifier": 0.1,
+		"temperatureC": -3
+	},
+	{
+		"name": "Mesosphere",
+		"altitudeStartKm": 50,
+		"altitudeEndKm": 85,
+		"densityModifier": 0.001,
+		"temperatureC": -90
+	},
+	{
+		"name": "Thermosphere",
+		"altitudeStartKm": 85,
+		"altitudeEndKm": 600,
+		"densityModifier": 0.000001,
+		"temperatureC": 1500
+	},
+	{
+		"name": "Exosphere",
+		"altitudeStartKm": 600,
+		"altitudeEndKm": 10000,
+		"densityModifier": 0.0,
+		"temperatureC": 0
+	}
+]

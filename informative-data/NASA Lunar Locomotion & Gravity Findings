@@ -1,0 +1,15 @@
+### NASA Lunar Locomotion & Gravity Findings
+
+* **Lunar Surface Gravity ($1.62\text{ m/s}^2$):** Moon gravity is roughly **1/6th ($16.5\%$) of Earth's $9.81\text{ m/s}^2$**. Under a realistic astronaut vertical push-off velocity ($\approx 1.85\text{ m/s}$ in a pressurized EVA suit), a jump reaches $\approx 1.05\text{ m}$ with a **~2.3-second ballistic hang time** (compared to $\approx 0.52\text{ m}$ and ~0.65 seconds on Earth).
+* **Jump Fatigue on Earth vs. the Moon:**
+* **Earth ($9.81\text{ m/s}^2$):** Repeated vertical jumps rapidly fatigue fast-twitch leg muscles and absorb high landing impact forces, causing jump height to degrade noticeably after 3–4 consecutive jumps until you rest.
+* **Moon ($1.62\text{ m/s}^2$):** NASA Apollo EVA telemetry and hypogravity locomotion studies show that **hopping and loping actually require *less* metabolic energy per meter than walking** on the Moon because body weight is 1/6th normal and tendons store elastic energy across long flight phases. Fatigue still occurs due to **pressurized spacesuit joint resistance** (bending stiff knees/hips against internal suit pressure), but jump height degrades at **~25–30% of Earth's rate** and recovers during the long hang time between bounds.
+
+
+* **Lower Lunar Traction (More Ground Inertia):** Because surface friction scales directly with gravity ($F_f = \mu m g$), starting and stopping on lunar regolith has **~6× less traction** than an Earth floor—meaning longer acceleration ramp-up and a slight slide when decelerating.
+
+### How It Should Behaves Now
+
+* **Weight & Inertia:** Starting a sprint takes a brief moment to build momentum, and releasing `WASD` decelerates smoothly rather than stopping dead on a single frame.
+* **Progressive Jump Fatigue:** Jumping repeatedly on Earth drains `jumpStamina` (`18%` per jump), visibly lowering consecutive hops until you pause to recover; on the Moon (`lunarLowG`), fatigue is minimal (`5%` per bound) and traction is noticeably looser on lunar dust.
+* **Locked Ballistic Arc:** Once your feet leave the ground, looking left, right, or behind you moves only your head—you cannot steer sideways or curve your jump in mid-air, and only pulling back against your takeoff trajectory checks your forward momentum.

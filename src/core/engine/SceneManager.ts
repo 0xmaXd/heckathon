@@ -24,12 +24,19 @@ export interface GameScene {
 	update?(delta: number): SceneFrameFeedback | void;
 }
 
+export interface CameraController {
+	updateCamera(delta: number, camera: THREE.PerspectiveCamera): boolean;
+}
+
 export class SceneManager {
 	private canvas: HTMLCanvasElement | null = null;
 	private renderer: THREE.WebGLRenderer | null = null;
 	private camera: THREE.PerspectiveCamera | null = null;
 	private controls: OrbitControls | null = null;
 	private clock = new THREE.Timer();
+	private fps = 0;
+	private fpsFrames = 0;
+	private fpsElapsed = 0;
 
 	private scenes = new Map<number, GameScene>();
 	private initializedScenes = new Set<number>();
@@ -45,10 +52,17 @@ export class SceneManager {
 	// Ray Casting YAY!!!!!!
 	private raycaster = new THREE.Raycaster();
 
+	private cameraController: CameraController | null = null;
+
 	private boundResize = () => this.onWindowResize();
 
 	registerScene(phase: number, gameScene: GameScene) {
 		this.scenes.set(phase, gameScene);
+	}
+
+	// Registration for Camera
+	setCameraController(controller: CameraController | null) {
+		this.cameraController = controller;
 	}
 
 	init(canvasElement: HTMLCanvasElement) {
@@ -71,6 +85,10 @@ export class SceneManager {
 
 		this.switchScene(this.currentPhase);
 		window.addEventListener('resize', this.boundResize);
+	}
+
+	getFps(): number {
+		return this.fps;
 	}
 
 	switchScene(phase: number) {
@@ -173,22 +191,39 @@ export class SceneManager {
 		this.clock.update();
 		const delta = Math.min(this.clock.getDelta(), 0.1);
 
+		// Update smoothed FPS readout every 0.25s
+		if (delta > 0) {
+			this.fpsFrames++;
+			this.fpsElapsed += delta;
+			if (this.fpsElapsed >= 0.25) {
+				this.fps = Math.round(this.fpsFrames / this.fpsElapsed);
+				this.fpsFrames = 0;
+				this.fpsElapsed = 0;
+			}
+		}
+
 		if (this.renderer && this.camera && this.controls && this.activeScene) {
-			// 1. Subtract previous frame's shake offset so OrbitControls calculates from true position
+			// 1. Subtract previous frame's shake offset so controls calculate from true position
 			this.camera.position.sub(this.lastShake);
 			this.lastShake.set(0, 0, 0);
 
 			// 2. Step active scene and apply vertical orbit tracking if requested
 			const feedback = this.activeScene.update?.(delta);
 
-			if (feedback?.orbitTargetY !== undefined) {
-				const deltaY = feedback.orbitTargetY - this.controls.target.y;
-				this.controls.target.y = feedback.orbitTargetY;
-				this.camera.position.y += deltaY;
-			}
+			// 3. Let PlayerController drive the camera if active; otherwise use OrbitControls
+			const drivenByPlayer = this.cameraController?.updateCamera(delta, this.camera) ?? false;
+			const allowOrbit =
+				!drivenByPlayer && (this.activeScene.cameraPreset?.controlsEnabled ?? true);
+			this.controls.enabled = allowOrbit;
 
-			// 3. Update OrbitControls damping
-			this.controls.update();
+			if (allowOrbit) {
+				if (feedback?.orbitTargetY !== undefined) {
+					const deltaY = feedback.orbitTargetY - this.controls.target.y;
+					this.controls.target.y = feedback.orbitTargetY;
+					this.camera.position.y += deltaY;
+				}
+				this.controls.update();
+			}
 
 			// 4. Compute combined shake (continuous scene feedback vs. decaying impulse shake)
 			let impulseIntensity = 0;

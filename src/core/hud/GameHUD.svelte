@@ -2,9 +2,12 @@
 	import { missionStore } from '../state/missionStore.svelte';
 	import { sceneManager } from '../engine/SceneManager';
 	import { hudStore, type HudAction } from './hudStore.svelte';
+	import { playerController } from '../player/PlayerController.svelte';
 
 	let inspectPanelWidth = $state(290);
 	let inspectPanelHeight = $state(210);
+	let showFps = $state(false);
+	let currentFps = $state(0);
 
 	function isActionDisabled(action: HudAction): boolean {
 		return typeof action.disabled === 'function' ? action.disabled() : Boolean(action.disabled);
@@ -27,6 +30,13 @@
 	}
 
 	function handleKeyDown(event: KeyboardEvent) {
+		if (event.code === 'Backquote' || event.code === 'F9') {
+			event.preventDefault();
+			showFps = !showFps;
+			if (showFps) currentFps = sceneManager.getFps();
+			return;
+		}
+
 		if (event.key === 'Escape' && hudStore.inspectedObject) {
 			hudStore.clearInspection();
 		}
@@ -59,6 +69,9 @@
 						hasScenePanel
 					);
 				}
+			}
+			if (showFps) {
+				currentFps = sceneManager.getFps();
 			}
 
 			frameId = requestAnimationFrame(updateHudTracking);
@@ -111,6 +124,12 @@
 			</div>
 		</div>
 	</header>
+
+	{#if showFps}
+		<div class="fps-badge">
+			FPS: <strong>{currentFps}</strong>
+		</div>
+	{/if}
 
 	<!-- COMPULSORY: Center Screen Dot (highlights only when aiming at an inspectable object) -->
 	<div class="center-reticle">
@@ -225,6 +244,23 @@
 	{#if hudStore.commsMessage}
 		<div class="comms-bar">
 			<p>{hudStore.commsMessage}</p>
+		</div>
+	{/if}
+
+	{#if playerController.isActive}
+		<div class="fp-hint">
+			{#if playerController.debugOrbitMode}
+				<span>DEBUG ORBIT CAMERA • <kbd>F2</kbd> First-Person • <kbd>`</kbd> FPS</span>
+			{:else if !playerController.isPointerLocked}
+				<span
+					>Click viewport to look • <kbd>WASD</kbd> Move • <kbd>F2</kbd> Orbit • <kbd>`</kbd> FPS</span
+				>
+			{:else}
+				<span
+					><kbd>WASD</kbd> Move • <kbd>Space</kbd> Jump • <kbd>MMB</kbd> Scan • <kbd>`</kbd> FPS •
+					<kbd>ESC</kbd> Unlock</span
+				>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -523,7 +559,33 @@
 		color: #f0d060;
 	}
 
+	.fp-hint {
+		position: fixed;
+		right: 2rem;
+		bottom: 1.5rem;
+		background: rgba(10, 15, 30, 0.82);
+		border: 1px solid #1f4b8e;
+		border-radius: 6px;
+		padding: 0.45rem 0.85rem;
+		font-size: 0.78rem;
+		color: #8fb8ff;
+		backdrop-filter: blur(4px);
+	}
+
 	.comms-bar p {
 		margin: 0;
+	}
+
+	.fps-badge {
+		position: fixed;
+		right: 2rem;
+		top: 4.5rem;
+		background: rgba(10, 15, 30, 0.85);
+		border: 1px solid #1f4b8e;
+		border-radius: 4px;
+		padding: 0.3rem 0.65rem;
+		font-family: monospace;
+		font-size: 0.8rem;
+		color: #4da6ff;
 	}
 </style>

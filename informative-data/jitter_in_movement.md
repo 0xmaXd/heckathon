@@ -1,0 +1,3 @@
+The movement jitter happens because `PhysicsWorld` steps at a fixed **60Hz** (`1/60s`), while `requestAnimationFrame` fires at slightly varying intervals (e.g., `16.2ms`, `17.1ms`, `16.5ms`). On frames where the accumulated time is just shy of `16.67ms`, **0 physics steps** execute, so `PlayerController` reads the exact same `body.translation()` twice in a row—causing horizontal movement to stutter even though standing still and rotating the mouse (`yaw`/`pitch`) stays smooth.
+
+Interpolating the player's position between the previous and current physics ticks using the leftover accumulator fraction (`alpha = accumulator / fixedStep`) eliminates the jitter across 60Hz, 120Hz, and 144Hz monitors. Below is that fix along with an **`F3` FPS counter** toggle.

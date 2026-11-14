@@ -5,6 +5,7 @@ import type { CameraPreset, GameScene } from '../../core/engine/SceneManager';
 import { hudStore } from '../../core/hud/hudStore.svelte';
 import { missionStore } from '../../core/state/missionStore.svelte';
 import hudMeta from './locker.hud.json';
+import { playerController } from '../../core/player/PlayerController.svelte';
 
 export class LockerRoomScene implements GameScene {
 	public scene: THREE.Scene;
@@ -92,6 +93,12 @@ export class LockerRoomScene implements GameScene {
 	onEnter() {
 		this.buildColliders();
 
+		playerController.spawn({
+			position: [0, 0.9, 3.5],
+			yaw: 0,
+			profile: 'earthWalk'
+		});
+
 		hudStore.configureScene({
 			location: hudMeta.hud.location,
 			objective: hudMeta.hud.objective,
@@ -108,6 +115,7 @@ export class LockerRoomScene implements GameScene {
 	}
 
 	onExit() {
+		playerController.despawn();
 		hudStore.reset();
 	}
 }

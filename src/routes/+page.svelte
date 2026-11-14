@@ -3,6 +3,7 @@
 	import { missionStore } from '../core/state/missionStore.svelte';
 	import { sceneManager } from '../core/engine/SceneManager';
 	import { physicsWorld } from '../core/engine/PhysicsWorld';
+	import { playerController } from '../core/player/PlayerController.svelte';
 	import GameHUD from '../core/hud/GameHUD.svelte';
 
 	import { lockerRoomScene } from '../features/01-earth-locker-room/LockerRoomScene';
@@ -23,6 +24,8 @@
 		const start = async () => {
 			await physicsWorld.init();
 			sceneManager.init(canvasElement);
+			playerController.attachCanvas(canvasElement);
+			sceneManager.setCameraController(playerController);
 
 			const loop = () => {
 				physicsWorld.step();
@@ -36,6 +39,7 @@
 
 		return () => {
 			cancelAnimationFrame(frameId);
+			playerController.dispose();
 			sceneManager.dispose();
 		};
 	});

@@ -10,6 +10,7 @@ import {
 } from '../../core/engine/SceneManager';
 import { hudStore } from '../../core/hud/hudStore.svelte';
 import { missionStore } from '../../core/state/missionStore.svelte';
+import { LaunchRoomConfig } from './launch-room.config';
 import { launchState, resetLaunchState } from './launchState.svelte';
 import hudMeta from './launch-room.hud.json';
 
@@ -27,8 +28,11 @@ export class LaunchRoomScene implements GameScene {
 	private gantryGroup: THREE.Group;
 	private flame!: THREE.Mesh;
 
+	private launchElapsed = 0;
 	private rocketVelocity = 0;
-	private readonly altitudeScale = 2.5;
+	private climbRateKmS = 0;
+	private altitudeKm = 0;
+
 	private readonly dockedX = 0;
 	private readonly undockedX = -1.6;
 
@@ -84,7 +88,7 @@ export class LaunchRoomScene implements GameScene {
 
 		this.scene.add(this.rocketGroup);
 
-		// 3. Launch Tower (spans x = -6.0 to -3.0)
+		// 3. Launch Tower (spans x = -6.0 to -3.0, height = 22)
 		const towerGeo = new THREE.BoxGeometry(3, 22, 3);
 		const towerMat = new THREE.MeshStandardMaterial({ color: 0xcc3333 });
 		const tower = new THREE.Mesh(towerGeo, towerMat);
@@ -114,11 +118,13 @@ export class LaunchRoomScene implements GameScene {
 	}
 
 	onEnter() {
-		// Clearing Phase 1 colliders and sensors when entering the Launch Pad
 		physicsWorld.reset(GameConfig.physics.gravityEarth);
 
 		resetLaunchState();
+		this.launchElapsed = 0;
 		this.rocketVelocity = 0;
+		this.climbRateKmS = 0;
+		this.altitudeKm = 0;
 		this.rocketGroup.position.y = 0;
 		this.gantryGroup.position.x = this.dockedX;
 		this.flame.visible = false;
@@ -233,27 +239,45 @@ export class LaunchRoomScene implements GameScene {
 		}
 
 		let orbitTargetY: number | undefined;
+		const {
+			targetAltitudeKm,
+			karmanSkyBlackoutKm,
+			visualBaseAccel,
+			visualThrustRamp,
+			baseClimbAccelKmS2,
+			climbThrustRampKmS3
+		} = LaunchRoomConfig.ascent;
+
 		if (launchState.isLaunched) {
-			this.rocketVelocity += 8.0 * delta;
+			this.launchElapsed += delta;
+
+			// Visual 3D climb: clears the 22-unit launch tower right around Troposphere exit (~5s)
+			const visualAccel = visualBaseAccel + visualThrustRamp * this.launchElapsed;
+			this.rocketVelocity += visualAccel * delta;
 			this.rocketGroup.position.y += this.rocketVelocity * delta;
 			orbitTargetY = this.rocketGroup.position.y + 12;
+
+			// Progressive atmospheric ascent curve (slow off the pad, accelerating as propellant burns)
+			const climbAccel = baseClimbAccelKmS2 + climbThrustRampKmS3 * this.launchElapsed;
+			this.climbRateKmS += climbAccel * delta;
+			this.altitudeKm = Math.min(targetAltitudeKm, this.altitudeKm + this.climbRateKmS * delta);
 		}
 
-		const altitudeKm = this.rocketGroup.position.y * this.altitudeScale;
-		launchState.altitudeKm = Math.round(altitudeKm);
-		launchState.currentLayer = this.getAtmosphereLayer(altitudeKm);
+		launchState.altitudeKm = Math.round(this.altitudeKm);
+		launchState.currentLayer = this.getAtmosphereLayer(this.altitudeKm);
 
 		const labels = hudMeta.hud.telemetryLabels;
 		hudStore.setTelemetry(labels.dock, launchState.dockState);
 		hudStore.setTelemetry(labels.altitude, `${launchState.altitudeKm} km`);
 		hudStore.setTelemetry(labels.atmosphere, launchState.currentLayer.toUpperCase());
 
-		const spaceFactor = Math.min(1, altitudeKm / 600);
+		// Sky transitions to pitch black across the Kármán line (~100-120 km)
+		const spaceFactor = Math.min(1, this.altitudeKm / karmanSkyBlackoutKm);
 		this.scene.background = new THREE.Color(0x5ca2e0).lerp(new THREE.Color(0x000000), spaceFactor);
 
-		const shakeIntensity = launchState.isIgnited ? Math.max(0, 0.25 - altitudeKm * 0.001) : 0;
+		const shakeIntensity = launchState.isIgnited ? Math.max(0, 0.25 - this.altitudeKm * 0.002) : 0;
 
-		if (altitudeKm >= 600 && !launchState.isBlackout) {
+		if (this.altitudeKm >= targetAltitudeKm && !launchState.isBlackout) {
 			launchState.isBlackout = true;
 			launchState.isLaunched = false;
 			hudStore.triggerBlackout(hudMeta.hud.blackoutMessage);

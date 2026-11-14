@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import atmosphereLayers from '#lib/assets/data/nasa/atmosphere_layers.json';
+import { GameConfig } from '../../config/game.config';
+import { physicsWorld } from '../../core/engine/PhysicsWorld';
 import {
 	type CameraPreset,
 	type GameScene,
@@ -8,7 +10,7 @@ import {
 } from '../../core/engine/SceneManager';
 import { hudStore } from '../../core/hud/hudStore.svelte';
 import { missionStore } from '../../core/state/missionStore.svelte';
-import { resetLaunchState, launchState } from './launchState.svelte';
+import { launchState, resetLaunchState } from './launchState.svelte';
 import hudMeta from './launch-room.hud.json';
 
 export class LaunchRoomScene implements GameScene {
@@ -45,12 +47,14 @@ export class LaunchRoomScene implements GameScene {
 		sunLight.position.set(-10, 20, 10);
 		this.scene.add(sunLight);
 
+		// 1. Launch Pad Base
 		const padGeo = new THREE.CylinderGeometry(15, 15, 2, 32);
 		const padMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 1.0 });
 		const pad = new THREE.Mesh(padGeo, padMat);
 		pad.position.y = -1;
 		this.scene.add(pad);
 
+		// 2. Rocket Assembly (outer hull at x = -1.5)
 		const rocketGeo = new THREE.CylinderGeometry(1.5, 1.5, 18, 32);
 		const rocketMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, metalness: 0.2 });
 		const rocketBody = new THREE.Mesh(rocketGeo, rocketMat);
@@ -69,6 +73,7 @@ export class LaunchRoomScene implements GameScene {
 		nozzle.rotation.x = Math.PI;
 		this.rocketGroup.add(nozzle);
 
+		// Exhaust Flame
 		const flameGeo = new THREE.ConeGeometry(1.4, 6, 16);
 		const flameMat = new THREE.MeshBasicMaterial({ color: 0xff6600 });
 		this.flame = new THREE.Mesh(flameGeo, flameMat);
@@ -79,12 +84,14 @@ export class LaunchRoomScene implements GameScene {
 
 		this.scene.add(this.rocketGroup);
 
+		// 3. Launch Tower (spans x = -6.0 to -3.0)
 		const towerGeo = new THREE.BoxGeometry(3, 22, 3);
 		const towerMat = new THREE.MeshStandardMaterial({ color: 0xcc3333 });
 		const tower = new THREE.Mesh(towerGeo, towerMat);
 		tower.position.set(-4.5, 11, 0);
 		this.scene.add(tower);
 
+		// 4. Retractable Gantry Arm + Docking Collar
 		const armGeo = new THREE.BoxGeometry(2.2, 0.5, 1.2);
 		const armMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
 		const arm = new THREE.Mesh(armGeo, armMat);
@@ -100,13 +107,16 @@ export class LaunchRoomScene implements GameScene {
 		this.gantryGroup.position.x = this.dockedX;
 		this.scene.add(this.gantryGroup);
 
-		// Rocket metadata populated from launch-room.hud.json
+		// 5. Rocket metadata populated from launch-room.hud.json
 		const { nodeName, ...inspectMeta } = hudMeta.inspectables.rocket;
 		this.rocketGroup.name = nodeName;
 		this.rocketGroup.userData.inspect = inspectMeta;
 	}
 
 	onEnter() {
+		// Clearing Phase 1 colliders and sensors when entering the Launch Pad
+		physicsWorld.reset(GameConfig.physics.gravityEarth);
+
 		resetLaunchState();
 		this.rocketVelocity = 0;
 		this.rocketGroup.position.y = 0;

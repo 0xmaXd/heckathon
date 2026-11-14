@@ -21,8 +21,8 @@
 		let frameId: number;
 
 		const start = async () => {
-			sceneManager.init(canvasElement);
 			await physicsWorld.init();
+			sceneManager.init(canvasElement);
 
 			const loop = () => {
 				physicsWorld.step();

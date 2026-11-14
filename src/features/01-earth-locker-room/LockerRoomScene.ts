@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { GameConfig } from '../../config/game.config';
+import { physicsWorld } from '../../core/engine/PhysicsWorld';
 import type { CameraPreset, GameScene } from '../../core/engine/SceneManager';
 import { hudStore } from '../../core/hud/hudStore.svelte';
 import { missionStore } from '../../core/state/missionStore.svelte';
@@ -13,6 +15,8 @@ export class LockerRoomScene implements GameScene {
 		minDistance: 1.5,
 		maxDistance: 8
 	};
+
+	private readonly lockerPositionsX = [-2, -1, 0];
 
 	constructor() {
 		this.scene = new THREE.Scene();
@@ -37,11 +41,11 @@ export class LockerRoomScene implements GameScene {
 		// 3 EVA Equipment Lockers populated from locker.hud.json
 		const lockerGeo = new THREE.BoxGeometry(0.8, 2, 0.8);
 		const lockerMat = new THREE.MeshStandardMaterial({ color: 0x1f4b8e });
-		const lockerPositionsX = [-2, -1, 0];
 
 		hudMeta.inspectables.lockers.forEach((meta, index) => {
+			const x = this.lockerPositionsX[index] ?? index - 2;
 			const locker = new THREE.Mesh(lockerGeo, lockerMat);
-			locker.position.set(lockerPositionsX[index] ?? index - 2, 1, -3);
+			locker.position.set(x, 1, -3);
 			locker.name = meta.name;
 			locker.userData.inspect = meta;
 			this.scene.add(locker);
@@ -57,7 +61,37 @@ export class LockerRoomScene implements GameScene {
 		this.scene.add(terminal);
 	}
 
+	private buildColliders() {
+		physicsWorld.reset(GameConfig.physics.gravityEarth);
+
+		// 1. Floor top surface at y = 0 (PlaneGeometry 10x10 -> half-extents 5 x 0.5 x 5)
+		physicsWorld.addFixedBox([5, 0.5, 5], [0, -0.5, 0]);
+
+		// 2. Room boundary walls so the player cannot walk off the 10x10 platform
+		physicsWorld.addFixedBox([5.5, 2, 0.25], [0, 2, -5.25]); // Back wall
+		physicsWorld.addFixedBox([5.5, 2, 0.25], [0, 2, 5.25]); // Front wall
+		physicsWorld.addFixedBox([0.25, 2, 5.5], [-5.25, 2, 0]); // Left wall
+		physicsWorld.addFixedBox([0.25, 2, 5.5], [5.25, 2, 0]); // Right wall
+
+		// 3. Static colliders for the 3 lockers (0.8 x 2.0 x 0.8 -> half-extents 0.4 x 1.0 x 0.4)
+		hudMeta.inspectables.lockers.forEach((_, index) => {
+			const x = this.lockerPositionsX[index] ?? index - 2;
+			physicsWorld.addFixedBox([0.4, 1.0, 0.4], [x, 1.0, -3]);
+		});
+
+		// 4. Static collider for the Utility Terminal (1.5 x 1.0 x 1.0 -> half-extents 0.75 x 0.5 x 0.5)
+		physicsWorld.addFixedBox([0.75, 0.5, 0.5], [2, 0.5, -2]);
+
+		// 5. Proximity trigger sensor around the terminal for HUD interaction prompts
+		physicsWorld.addSensorBox([1.35, 1.0, 1.35], [2, 1.0, -2], {
+			onEnter: () => hudStore.setPrompt('E', 'Access Diagnostic Terminal'),
+			onExit: () => hudStore.clearPrompt()
+		});
+	}
+
 	onEnter() {
+		this.buildColliders();
+
 		hudStore.configureScene({
 			location: hudMeta.hud.location,
 			objective: hudMeta.hud.objective,

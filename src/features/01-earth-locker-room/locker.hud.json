@@ -1,0 +1,50 @@
+{
+	"hud": {
+		"location": "EARTH // CREW LOCKER ROOM",
+		"objective": "Inspect bay and proceed to Launch Pad 39A",
+		"panelTitle": "Locker Bay",
+		"actions": {
+			"proceedPad": "Proceed to Launch Pad"
+		}
+	},
+	"inspectables": {
+		"lockers": [
+			{
+				"name": "Locker 01 // EVA Helmet",
+				"category": "EVA Storage Locker",
+				"description": "Pressurized polycarbonate visor helmet with integrated HUD telemetry.",
+				"specs": {
+					"Item": "EVA Helmet",
+					"Seal": "Nominal"
+				}
+			},
+			{
+				"name": "Locker 02 // Oxygen Supply",
+				"category": "EVA Storage Locker",
+				"description": "Primary closed-circuit life support O2 reserve tank.",
+				"specs": {
+					"Item": "Oxygen Tank",
+					"Pressure": "3000 PSI"
+				}
+			},
+			{
+				"name": "Locker 03 // Radiation Dosimeter",
+				"category": "EVA Storage Locker",
+				"description": "Handheld Geiger-Mueller counter for solar and cosmic radiation monitoring.",
+				"specs": {
+					"Item": "Geiger Counter",
+					"Calibration": "Verified"
+				}
+			}
+		],
+		"terminal": {
+			"name": "Pre-Launch Diagnostic Terminal",
+			"category": "Facility Console",
+			"description": "Monitors crew life-support readiness and Launch Pad 39A umbilical status.",
+			"specs": {
+				"System": "Telemetry Link",
+				"Status": "Online"
+			}
+		}
+	}
+}

@@ -8,3 +8,12 @@ export const launchState = $state({
 	currentLayer: 'Troposphere',
 	isBlackout: false
 });
+
+export function resetLaunchState() {
+	launchState.dockState = 'DOCKED';
+	launchState.isIgnited = false;
+	launchState.isLaunched = false;
+	launchState.altitudeKm = 0;
+	launchState.currentLayer = 'Troposphere';
+	launchState.isBlackout = false;
+}

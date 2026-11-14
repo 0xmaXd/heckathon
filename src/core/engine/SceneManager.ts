@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { lockerRoomScene } from '../../features/01-earth-locker-room/LockerRoomScene';
-import { launchRoomScene } from '../../features/02-earth-launch-room/LaunchRoomScene';
 
 export interface CameraPreset {
 	position: [number, number, number];
 	target: [number, number, number];
+	maxPolarAngle?: number;
+	minDistance?: number;
+	maxDistance?: number;
+	controlsEnabled?: boolean;
 }
 
 export interface SceneFrameFeedback {
@@ -17,6 +19,8 @@ export interface GameScene {
 	scene: THREE.Scene;
 	cameraPreset?: CameraPreset;
 	init(): void;
+	onEnter?(): void;
+	onExit?(): void;
 	update?(delta: number): SceneFrameFeedback | void;
 }
 
@@ -28,11 +32,23 @@ export class SceneManager {
 	private clock = new THREE.Timer();
 
 	private scenes = new Map<number, GameScene>();
+	private initializedScenes = new Set<number>();
 	private activeScene: GameScene | null = null;
+	private currentPhase = 1;
 
-	constructor() {
-		this.scenes.set(1, lockerRoomScene);
-		this.scenes.set(2, launchRoomScene);
+	// Camera shake state (supports both one-shot impulses and continuous scene feedback)
+	private lastShake = new THREE.Vector3();
+	private shakeTimeRemaining = 0;
+	private shakeDuration = 0;
+	private shakeMaxIntensity = 0;
+
+	// Ray Casting YAY!!!!!!
+	private raycaster = new THREE.Raycaster();
+
+	private boundResize = () => this.onWindowResize();
+
+	registerScene(phase: number, gameScene: GameScene) {
+		this.scenes.set(phase, gameScene);
 	}
 
 	init(canvasElement: HTMLCanvasElement) {
@@ -52,30 +68,65 @@ export class SceneManager {
 		this.controls = new OrbitControls(this.camera, this.renderer.domElement);
 		this.controls.enableDamping = true;
 		this.controls.dampingFactor = 0.05;
-		this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
-		for (const gameScene of this.scenes.values()) {
-			gameScene.init();
-		}
-
-		this.switchScene(1);
-		window.addEventListener('resize', () => this.onWindowResize());
+		this.switchScene(this.currentPhase);
+		window.addEventListener('resize', this.boundResize);
 	}
 
 	switchScene(phase: number) {
+		this.currentPhase = phase;
+
 		const nextScene = this.scenes.get(phase);
 		if (!nextScene || !this.camera || !this.controls) return;
 
+		this.activeScene?.onExit?.();
+
+		// Lazy-initialize only when the phase is entered for the first time
+		if (!this.initializedScenes.has(phase)) {
+			nextScene.init();
+			this.initializedScenes.add(phase);
+		}
+
 		this.activeScene = nextScene;
+
+		// Clear any active camera shake from the previous scene
+		this.lastShake.set(0, 0, 0);
+		this.shakeTimeRemaining = 0;
+		this.shakeMaxIntensity = 0;
 
 		const preset = this.activeScene.cameraPreset ?? {
 			position: [0, 1.5, 5],
 			target: [0, 1, 0]
 		};
 
+		this.controls.enabled = preset.controlsEnabled ?? true;
+		this.controls.maxPolarAngle = preset.maxPolarAngle ?? Math.PI / 2 - 0.05;
+		this.controls.minDistance = preset.minDistance ?? 1;
+		this.controls.maxDistance = preset.maxDistance ?? 500;
+
 		this.camera.position.set(...preset.position);
 		this.controls.target.set(...preset.target);
 		this.controls.update();
+
+		this.activeScene.onEnter?.();
+	}
+
+	/**
+	 * Universal camera shake usable from any scene, collision, or UI event.
+	 * @param intensity Peak displacement in world units (e.g., 0.1 = subtle thud, 0.5 = heavy impact)
+	 * @param duration Duration in seconds before shake decays to zero (default: 0.35s)
+	 */
+	shake(intensity: number, duration = 0.35) {
+		if (intensity <= 0 || duration <= 0) return;
+
+		// Preserve whichever shake is stronger if one is already active
+		if (intensity >= this.shakeMaxIntensity || this.shakeTimeRemaining <= 0) {
+			this.shakeMaxIntensity = intensity;
+			this.shakeDuration = duration;
+			this.shakeTimeRemaining = duration;
+		} else {
+			this.shakeTimeRemaining = Math.max(this.shakeTimeRemaining, duration);
+		}
 	}
 
 	private onWindowResize() {
@@ -85,11 +136,49 @@ export class SceneManager {
 		this.renderer.setSize(window.innerWidth, window.innerHeight);
 	}
 
+	// Method for picking up object with the ray caster
+	pickObject(ndcX: number, ndcY: number): THREE.Object3D | null {
+		if (!this.camera || !this.activeScene) return null;
+
+		this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+		const hits = this.raycaster.intersectObjects(this.activeScene.scene.children, true);
+
+		return hits.length > 0 ? hits[0].object : null;
+	}
+
+	// Getting camera position for stuff like changing hiding dialog, etc.
+	getCameraPosition(target = new THREE.Vector3()): THREE.Vector3 | null {
+		if (!this.camera) return null;
+		return this.camera.getWorldPosition(target);
+	}
+
+	// Get the World point of the object
+	projectWorldPoint(
+		worldPos: THREE.Vector3,
+		out = new THREE.Vector3()
+	): { x: number; y: number; z: number; inFront: boolean } | null {
+		if (!this.camera) return null;
+
+		out.copy(worldPos).project(this.camera);
+
+		return {
+			x: (out.x * 0.5 + 0.5) * window.innerWidth,
+			y: (-out.y * 0.5 + 0.5) * window.innerHeight,
+			z: out.z,
+			inFront: out.z >= -1 && out.z <= 1
+		};
+	}
+
 	render() {
 		this.clock.update();
-		const delta = this.clock.getDelta();
+		const delta = Math.min(this.clock.getDelta(), 0.1);
 
 		if (this.renderer && this.camera && this.controls && this.activeScene) {
+			// 1. Subtract previous frame's shake offset so OrbitControls calculates from true position
+			this.camera.position.sub(this.lastShake);
+			this.lastShake.set(0, 0, 0);
+
+			// 2. Step active scene and apply vertical orbit tracking if requested
 			const feedback = this.activeScene.update?.(delta);
 
 			if (feedback?.orbitTargetY !== undefined) {
@@ -98,14 +187,36 @@ export class SceneManager {
 				this.camera.position.y += deltaY;
 			}
 
-			if (feedback?.shakeIntensity && feedback.shakeIntensity > 0) {
-				this.camera.position.x += (Math.random() - 0.5) * feedback.shakeIntensity;
-				this.camera.position.y += (Math.random() - 0.5) * feedback.shakeIntensity;
+			// 3. Update OrbitControls damping
+			this.controls.update();
+
+			// 4. Compute combined shake (continuous scene feedback vs. decaying impulse shake)
+			let impulseIntensity = 0;
+			if (this.shakeTimeRemaining > 0) {
+				const progress = this.shakeTimeRemaining / this.shakeDuration;
+				impulseIntensity = this.shakeMaxIntensity * (progress * progress);
+				this.shakeTimeRemaining = Math.max(0, this.shakeTimeRemaining - delta);
 			}
 
-			this.controls.update();
+			const totalShake = Math.max(feedback?.shakeIntensity ?? 0, impulseIntensity);
+
+			if (totalShake > 0) {
+				this.lastShake.set(
+					(Math.random() - 0.5) * totalShake,
+					(Math.random() - 0.5) * totalShake,
+					(Math.random() - 0.5) * totalShake * 0.5
+				);
+				this.camera.position.add(this.lastShake);
+			}
+
 			this.renderer.render(this.activeScene.scene, this.camera);
 		}
+	}
+
+	dispose() {
+		window.removeEventListener('resize', this.boundResize);
+		this.controls?.dispose();
+		this.renderer?.dispose();
 	}
 }
 

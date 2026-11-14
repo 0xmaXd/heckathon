@@ -1,0 +1,37 @@
+{
+	"hud": {
+		"location": "EARTH // LAUNCH PAD 39A",
+		"objective": "Retract gantry, ignite engines, and clear atmosphere",
+		"panelTitle": "Launch Control",
+		"telemetryLabels": {
+			"dock": "GANTRY DOCK",
+			"altitude": "ALTITUDE",
+			"atmosphere": "ATMOSPHERE"
+		},
+		"initialTelemetry": {
+			"GANTRY DOCK": "DOCKED",
+			"ALTITUDE": "0 km",
+			"ATMOSPHERE": "TROPOSPHERE"
+		},
+		"actions": {
+			"undock": "1. Undock Gantry",
+			"dock": "Re-Dock Gantry",
+			"ignite": "2. Ignite Main Engines",
+			"launch": "3. Release Clamps & Liftoff"
+		},
+		"blackoutMessage": "ATMOSPHERIC EXIT COMPLETE — ENTERING ORBIT..."
+	},
+	"inspectables": {
+		"rocket": {
+			"nodeName": "Ares_IV_Launch_Vehicle",
+			"name": "Ares-IV Heavy Booster",
+			"category": "Orbital Launch Vehicle",
+			"description": "Two-stage heavy-lift rocket configured for cislunar trajectory insertion.",
+			"specs": {
+				"Height": "45.0 m",
+				"Propellant": "LOX / RP-1",
+				"Target": "Exosphere (600 km)"
+			}
+		}
+	}
+}

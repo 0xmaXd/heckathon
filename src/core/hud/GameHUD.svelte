@@ -184,6 +184,24 @@
 		</aside>
 	{/if}
 
+	{#if hudStore.rightPanel}
+		<aside class="right-panel">
+			<h2>{hudStore.rightPanel.title}</h2>
+			{#if hudStore.rightPanel.subtitle}
+				<p class="right-subtitle">{hudStore.rightPanel.subtitle}</p>
+			{/if}
+
+			<div class="telemetry">
+				{#each Object.entries(hudStore.rightPanel.telemetry) as [key, value] (key)}
+					<p>
+						<span>{key}:</span>
+						<strong>{value}</strong>
+					</p>
+				{/each}
+			</div>
+		</aside>
+	{/if}
+
 	<!-- COMPULSORY: Tracked Object Scanner Card (triggered by Middle Mouse Button) -->
 	{#if hudStore.inspectedObject && hudStore.inspectPlacement?.visible}
 		{#if lineStart}
@@ -576,14 +594,34 @@
 		margin: 0;
 	}
 
-	.fps-badge {
+	.right-panel {
 		position: fixed;
 		right: 2rem;
-		top: 4.5rem;
+		top: 6rem;
+		background: rgba(10, 15, 30, 0.85);
+		border: 1px solid #1f4b8e;
+		border-radius: 8px;
+		padding: 1.25rem;
+		width: 310px;
+		backdrop-filter: blur(4px);
+		pointer-events: auto;
+	}
+
+	.right-subtitle {
+		margin: -0.65rem 0 0.85rem 0;
+		font-family: monospace;
+		font-size: 0.75rem;
+		color: #cca300;
+	}
+
+	.fps-badge {
+		position: fixed;
+		right: 15.5rem;
+		top: 1.45rem;
 		background: rgba(10, 15, 30, 0.85);
 		border: 1px solid #1f4b8e;
 		border-radius: 4px;
-		padding: 0.3rem 0.65rem;
+		padding: 0.35rem 0.65rem;
 		font-family: monospace;
 		font-size: 0.8rem;
 		color: #4da6ff;

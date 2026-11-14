@@ -24,6 +24,12 @@ export interface GameScene {
 	update?(delta: number): SceneFrameFeedback | void;
 }
 
+export interface SceneFrameFeedback {
+	orbitTargetY?: number;
+	orbitTarget?: [number, number, number];
+	shakeIntensity?: number;
+}
+
 export interface CameraController {
 	updateCamera(delta: number, camera: THREE.PerspectiveCamera): boolean;
 }
@@ -60,6 +66,10 @@ export class SceneManager {
 		this.scenes.set(phase, gameScene);
 	}
 
+	hasScene(phase: number): boolean {
+		return this.scenes.has(phase);
+	}
+
 	// Registration for Camera
 	setCameraController(controller: CameraController | null) {
 		this.cameraController = controller;
@@ -91,18 +101,29 @@ export class SceneManager {
 		return this.fps;
 	}
 
-	switchScene(phase: number) {
-		this.currentPhase = phase;
+	switchScene(phase: number): number {
+		let resolvedPhase = phase;
 
-		const nextScene = this.scenes.get(phase);
-		if (!nextScene || !this.camera || !this.controls) return;
+		if (!this.scenes.has(resolvedPhase)) {
+			const upcoming = [...this.scenes.keys()]
+				.filter((p) => p > resolvedPhase)
+				.sort((a, b) => a - b);
+			if (upcoming.length > 0) {
+				resolvedPhase = upcoming[0];
+			}
+		}
+
+		this.currentPhase = resolvedPhase;
+
+		const nextScene = this.scenes.get(resolvedPhase);
+		if (!nextScene || !this.camera || !this.controls) return resolvedPhase;
 
 		this.activeScene?.onExit?.();
 
 		// Lazy-initialize only when the phase is entered for the first time
-		if (!this.initializedScenes.has(phase)) {
+		if (!this.initializedScenes.has(resolvedPhase)) {
 			nextScene.init();
-			this.initializedScenes.add(phase);
+			this.initializedScenes.add(resolvedPhase);
 		}
 
 		this.activeScene = nextScene;
@@ -127,6 +148,14 @@ export class SceneManager {
 		this.controls.update();
 
 		this.activeScene.onEnter?.();
+		return resolvedPhase;
+	}
+
+	setCameraView(position: [number, number, number], target: [number, number, number]) {
+		if (!this.camera || !this.controls) return;
+		this.camera.position.set(...position);
+		this.controls.target.set(...target);
+		this.controls.update();
 	}
 
 	/**
@@ -217,7 +246,16 @@ export class SceneManager {
 			this.controls.enabled = allowOrbit;
 
 			if (allowOrbit) {
-				if (feedback?.orbitTargetY !== undefined) {
+				if (feedback?.orbitTarget) {
+					const [tx, ty, tz] = feedback.orbitTarget;
+					const dx = tx - this.controls.target.x;
+					const dy = ty - this.controls.target.y;
+					const dz = tz - this.controls.target.z;
+					this.controls.target.set(tx, ty, tz);
+					this.camera.position.x += dx;
+					this.camera.position.y += dy;
+					this.camera.position.z += dz;
+				} else if (feedback?.orbitTargetY !== undefined) {
 					const deltaY = feedback.orbitTargetY - this.controls.target.y;
 					this.controls.target.y = feedback.orbitTargetY;
 					this.camera.position.y += deltaY;

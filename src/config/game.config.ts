@@ -1,5 +1,8 @@
 export const GameConfig = {
 	seed: 42, // Deterministic seed for anomalies and meteors
+	debug: {
+		enablePhaseJump: true
+	},
 	transitDurationDays: 3,
 	meteorDefense: {
 		maxStrikes: 2,

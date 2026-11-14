@@ -39,6 +39,12 @@ export interface SceneHudConfig {
 	customWidget?: Snippet | null;
 }
 
+export interface SecondaryHudPanel {
+	title: string;
+	subtitle?: string;
+	telemetry: Record<string, string | number>;
+}
+
 type PlacementSide = 'right' | 'left' | 'top' | 'bottom';
 
 export type ScreenProjectFn = (
@@ -64,6 +70,7 @@ class HudStore {
 	telemetry = $state<Record<string, string | number>>({});
 	actions = $state<HudAction[]>([]);
 	customWidget = $state<Snippet | null>(null);
+	rightPanel = $state<SecondaryHudPanel | null>(null);
 
 	// Internal tracking state
 	private inspectedTarget: THREE.Object3D | null = null;
@@ -84,6 +91,7 @@ class HudStore {
 		this.actions = config.actions ?? [];
 		this.customWidget = config.customWidget ?? null;
 		this.canInspectTarget = false;
+		this.rightPanel = null;
 		this.clearInspection();
 		this.interactionPrompt = null;
 		this.commsMessage = null;
@@ -211,7 +219,8 @@ class HudStore {
 		projectFn: ScreenProjectFn,
 		panelWidth: number,
 		panelHeight: number,
-		hasLeftPanel: boolean
+		hasLeftPanel: boolean,
+		hasRightPanel: boolean
 	) {
 		if (!this.inspectedObject || !this.inspectedTarget) return;
 
@@ -321,6 +330,8 @@ class HudStore {
 				hudOverlapPenalty += 250000;
 			}
 
+			if (hasRightPanel && cRight > vw - 355 && c.y < 430) hudOverlapPenalty += 250000;
+
 			const reticleX = vw * 0.5;
 			const reticleY = vh * 0.5;
 			const coversReticle =
@@ -386,6 +397,16 @@ class HudStore {
 		this.blackout = { active: true, message };
 	}
 
+	setRightPanel(panel: SecondaryHudPanel | null) {
+		this.rightPanel = panel;
+	}
+
+	setRightTelemetry(key: string, value: string | number) {
+		if (this.rightPanel) {
+			this.rightPanel.telemetry[key] = value;
+		}
+	}
+
 	reset() {
 		this.panelTitle = null;
 		this.telemetry = {};
@@ -394,6 +415,7 @@ class HudStore {
 		this.interactionPrompt = null;
 		this.commsMessage = null;
 		this.canInspectTarget = false;
+		this.rightPanel = null;
 		this.clearInspection();
 		this.blackout = { active: false, message: '' };
 	}

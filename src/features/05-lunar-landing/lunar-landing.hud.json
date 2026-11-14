@@ -1,0 +1,61 @@
+{
+	"hud": {
+		"location": "MOON // POWERED DESCENT",
+		"objective": "Monitor GNC descent or toggle Manual Assisted Landing (M) for soft touchdown",
+		"panelTitle": "Descent GNC",
+		"telemetryLabels": {
+			"site": "TARGET SITE",
+			"style": "PROFILE",
+			"mode": "CONTROL",
+			"phase": "GUIDANCE",
+			"altitude": "ALTITUDE",
+			"vertVel": "VERT VEL",
+			"horizVel": "HORIZ VEL",
+			"tilt": "ATTITUDE",
+			"fuel": "PROPELLANT"
+		},
+		"actions": {
+			"ignite": "Ignite Descent Engine (I)",
+			"toggleModeManual": "Switch to Manual Assisted (M)",
+			"toggleModeAuto": "Engage Auto-Land GNC (M)",
+			"styleApollo": "Profile: Apollo PGNCS",
+			"styleArtemis": "Profile: Artemis HLS",
+			"cycleSite": "Next Lunar Landing Site",
+			"retry": "Retry Descent",
+			"proceed": "Deploy to Lunar Surface"
+		},
+		"comms": {
+			"ready": "GNC ONLINE — Auto-Land active, or press [M] for Manual Assisted (W/S/A/D).",
+			"manualEngaged": "MANUAL ASSISTED (P66 DAP): [W/S] Sink Rate • [A/D] Lateral Translate • DAP holds level.",
+			"autoEngaged": "AUTONOMOUS GNC ENGAGED — Computer tracking landing beacon.",
+			"hdaActive": "ALHAT LiDAR SCAN: Boulder hazards marked — diverting to clear touchdown pad.",
+			"landedSuccess": "CONTACT LIGHT — Engine stop. Lunar surface touchdown confirmed!",
+			"crashed": "STRUCTURAL LIMIT EXCEEDED — Touchdown velocity or tilt outside safe envelope."
+		},
+		"blackoutMessage": "PRESSURIZING AIRLOCK — PREPARING LUNAR EVA..."
+	},
+	"inspectables": {
+		"lander": {
+			"nodeName": "Lunar_Descent_Lander",
+			"name": "Lunar Descent Module",
+			"category": "Crewed Lunar Lander",
+			"description": "Deep-throttling descent stage with gimbaled main engine, 4-quad RCS thrusters, and Digital Autopilot.",
+			"specs": {
+				"Gravity": "1.62 m/s² (Moon)",
+				"Autopilot": "3-Axis Rate-Hold DAP",
+				"Legs": "4x Crushable Honeycomb"
+			}
+		},
+		"landingPad": {
+			"nodeName": "Lunar_Landing_Beacon",
+			"name": "Landing Zone Beacon",
+			"category": "Surface Navigation Aid",
+			"description": "Radar transponder and optical hazard-free touchdown zone.",
+			"specs": {
+				"Safe Vert Vel": "< 2.50 m/s",
+				"Safe Horiz Vel": "< 0.60 m/s",
+				"Slope": "< 1.5 deg"
+			}
+		}
+	}
+}

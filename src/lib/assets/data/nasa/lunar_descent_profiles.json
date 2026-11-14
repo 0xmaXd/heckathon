@@ -1,0 +1,67 @@
+{
+	"lunarGravityMs2": 1.62,
+	"profiles": {
+		"apollo": {
+			"id": "apollo",
+			"name": "Apollo LM PGNCS (P63/P64/P66)",
+			"vehicle": "Apollo Lunar Module (LM-5 Eagle)",
+			"dryMassKg": 4920,
+			"propellantMassKg": 8200,
+			"maxThrustN": 45040,
+			"specificImpulseS": 311,
+			"dimensions": "7.04 m H × 9.45 m W",
+			"stagingOrbitKm": 111.1,
+			"pdiAltitudeM": 15240,
+			"pdiHorizontalVelMs": 1695,
+			"highGateAltitudeM": 2200,
+			"lowGateAltitudeM": 150,
+			"lowGateHorizontalVelMs": 18,
+			"targetTouchdownVelMs": -1.1,
+			"maxTiltDeg": 20,
+			"hasHazardAvoidance": false,
+			"touchdownLimits": {
+				"maxVerticalSpeedMs": 3.05,
+				"maxHorizontalSpeedMs": 1.22,
+				"maxTiltDeg": 12.0,
+				"maxPadOffsetM": 9.0
+			},
+			"guidancePhases": [
+				{ "id": "P63_BRAKING", "name": "P63 // Braking Phase", "minAltitudeM": 2200 },
+				{ "id": "P64_APPROACH", "name": "P64 // High Gate Pitchover", "minAltitudeM": 150 },
+				{ "id": "P66_TERMINAL", "name": "P66 // Rate-of-Descent Assist", "minAltitudeM": 30 },
+				{ "id": "TOUCHDOWN", "name": "Terminal Vertical Touchdown", "minAltitudeM": 0 }
+			]
+		},
+		"artemis": {
+			"id": "artemis",
+			"name": "Artemis HLS + ALHAT (TRN / HDA)",
+			"vehicle": "Human Landing System (HLS)",
+			"dryMassKg": 16500,
+			"propellantMassKg": 24500,
+			"maxThrustN": 135000,
+			"specificImpulseS": 380,
+			"dimensions": "14.2 m H × 11.0 m W",
+			"stagingOrbitKm": 100.0,
+			"pdiAltitudeM": 15000,
+			"pdiHorizontalVelMs": 1692,
+			"highGateAltitudeM": 2500,
+			"lowGateAltitudeM": 100,
+			"lowGateHorizontalVelMs": 0,
+			"targetTouchdownVelMs": -0.85,
+			"maxTiltDeg": 15,
+			"hasHazardAvoidance": true,
+			"touchdownLimits": {
+				"maxVerticalSpeedMs": 2.5,
+				"maxHorizontalSpeedMs": 0.6,
+				"maxTiltDeg": 8.0,
+				"maxPadOffsetM": 5.0
+			},
+			"guidancePhases": [
+				{ "id": "TRN_BRAKING", "name": "TRN // Powered Descent", "minAltitudeM": 2500 },
+				{ "id": "HDA_SCAN", "name": "ALHAT // Hazard Avoidance", "minAltitudeM": 100 },
+				{ "id": "GNC_VERTICAL", "name": "GNC // Plume-Safe Vertical", "minAltitudeM": 30 },
+				{ "id": "TOUCHDOWN", "name": "Precision Autonomous Touchdown", "minAltitudeM": 0 }
+			]
+		}
+	}
+}

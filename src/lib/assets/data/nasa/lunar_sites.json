@@ -1,0 +1,34 @@
+{
+	"sites": [
+		{
+			"id": "shackleton_rim",
+			"name": "Shackleton Crater Rim (Artemis III)",
+			"coordinates": "89.54° S, 0.00° E",
+			"region": "Lunar South Pole",
+			"craterRoughness": 1.15,
+			"clearingRadiusM": 26,
+			"worldOffset": [0, 0],
+			"description": "High-illumination south polar ridge adjacent to permanently shadowed water-ice craters."
+		},
+		{
+			"id": "tranquility_base",
+			"name": "Mare Tranquillitatis (Apollo 11)",
+			"coordinates": "0.6741° N, 23.4730° E",
+			"region": "Sea of Tranquility",
+			"craterRoughness": 0.75,
+			"clearingRadiusM": 32,
+			"worldOffset": [1200, -800],
+			"description": "Smooth basaltic mare plain where Apollo 11 Eagle touched down on July 20, 1969."
+		},
+		{
+			"id": "taurus_littrow",
+			"name": "Taurus-Littrow Valley (Apollo 17)",
+			"coordinates": "20.1908° N, 30.7717° E",
+			"region": "Southeastern Mare Serenitatis",
+			"craterRoughness": 1.35,
+			"clearingRadiusM": 24,
+			"worldOffset": [-1500, 950],
+			"description": "Deep highland-rimmed graben valley rich in volcanic glass and ancient crustal breccias."
+		}
+	]
+}

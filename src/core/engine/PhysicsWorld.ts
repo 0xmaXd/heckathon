@@ -18,6 +18,7 @@ export interface SensorCallbacks {
 
 export class PhysicsWorld {
 	private isInitialized = false;
+	private initPromise: Promise<void> | null = null;
 	private world: RAPIER.World | null = null;
 	private eventQueue: RAPIER.EventQueue | null = null;
 	private clock = new THREE.Timer();
@@ -32,14 +33,20 @@ export class PhysicsWorld {
 	private playerPrevPos = new THREE.Vector3();
 	private playerCurrPos = new THREE.Vector3();
 
-	async init(gravity = GameConfig.physics.gravityEarth) {
+	async init(gravity = GameConfig.physics.gravityEarth): Promise<void> {
 		if (this.isInitialized) return;
 
-		await RAPIER.init();
-		this.world = new RAPIER.World({ x: 0, y: this.normalizeGravityY(gravity), z: 0 });
-		this.world.timestep = this.fixedStep;
-		this.eventQueue = new RAPIER.EventQueue(true);
-		this.isInitialized = true;
+		if (!this.initPromise) {
+			this.initPromise = (async () => {
+				await RAPIER.init();
+				this.world = new RAPIER.World({ x: 0, y: this.normalizeGravityY(gravity), z: 0 });
+				this.world.timestep = this.fixedStep;
+				this.eventQueue = new RAPIER.EventQueue(true);
+				this.isInitialized = true;
+			})();
+		}
+
+		await this.initPromise;
 	}
 
 	private normalizeGravityY(gravity: number): number {
@@ -70,10 +77,6 @@ export class PhysicsWorld {
 		this.eventQueue = new RAPIER.EventQueue(true);
 	}
 
-	/**
-	 * Registers an immovable collider (floors, walls, lockers, terminals).
-	 * Zero per-frame physics calculation cost.
-	 */
 	addFixedBox(
 		halfExtents: [number, number, number],
 		position: [number, number, number],
@@ -98,9 +101,6 @@ export class PhysicsWorld {
 		return body;
 	}
 
-	/**
-	 * Registers a non-solid trigger volume that fires callbacks when a dynamic body enters/exits.
-	 */
 	addSensorBox(
 		halfExtents: [number, number, number],
 		position: [number, number, number],
@@ -120,9 +120,6 @@ export class PhysicsWorld {
 		return collider;
 	}
 
-	/**
-	 * Registers a dynamic box and automatically syncs its Three.js Object3D each frame.
-	 */
 	addDynamicBox(
 		object: THREE.Object3D,
 		halfExtents: [number, number, number],
@@ -160,10 +157,6 @@ export class PhysicsWorld {
 		return body;
 	}
 
-	/**
-	 * Creates an upright capsule rigid body with locked rotation for the player.
-	 * Friction is set to 0 so the player glides smoothly along walls and lockers.
-	 */
 	addPlayerCapsule(
 		radius: number,
 		halfHeight: number,
@@ -190,19 +183,12 @@ export class PhysicsWorld {
 		return body;
 	}
 
-	/**
-	 * Returns the render-interpolated player center position between fixed physics steps.
-	 */
 	getInterpolatedPlayerPosition(out = new THREE.Vector3()): THREE.Vector3 | null {
 		if (!this.playerBody) return null;
 		const alpha = Math.min(1, Math.max(0, this.accumulator / this.fixedStep));
 		return out.lerpVectors(this.playerPrevPos, this.playerCurrPos, alpha);
 	}
 
-	/**
-	 * Casts a short ray straight down from the body center (excluding the body itself)
-	 * to check if the player is standing on a surface.
-	 */
 	isBodyGrounded(body: RAPIER.RigidBody, maxDistance: number): boolean {
 		if (!this.world) return false;
 
@@ -236,7 +222,6 @@ export class PhysicsWorld {
 		this.accumulator += delta;
 
 		while (this.accumulator >= this.fixedStep) {
-			// 1. Snapshot positions prior to stepping the simulation
 			if (this.playerBody) {
 				const t = this.playerBody.translation();
 				this.playerPrevPos.set(t.x, t.y, t.z);
@@ -251,10 +236,8 @@ export class PhysicsWorld {
 				tracked.prevRot.set(rot.x, rot.y, rot.z, rot.w);
 			}
 
-			// 2. Advance Rapier by one fixed 1/60s step
 			this.world.step(this.eventQueue);
 
-			// 3. Snapshot post-step positions
 			if (this.playerBody) {
 				const t = this.playerBody.translation();
 				this.playerCurrPos.set(t.x, t.y, t.z);
@@ -286,7 +269,6 @@ export class PhysicsWorld {
 			this.accumulator -= this.fixedStep;
 		}
 
-		// 4. Smoothly interpolate dynamic meshes using the remaining accumulator fraction
 		const alpha = Math.min(1, Math.max(0, this.accumulator / this.fixedStep));
 		for (const tracked of this.dynamicBodies.values()) {
 			tracked.object.position.lerpVectors(tracked.prevPos, tracked.currPos, alpha);

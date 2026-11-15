@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { LunarOutpostConfig } from '../lunar-outpost.config';
 import type { DropOffZoneId, SurfaceType } from '../lunar-outpost.types';
+import type { AstronautController } from './AstronautController';
+import type { OrionRoverSystem } from './OrionRoverSystem';
 
 export interface SurfaceHit {
 	y: number;
@@ -20,13 +22,37 @@ export interface WorldDropOffZone {
 	beaconMesh: THREE.Mesh;
 }
 
+export interface SkywardWaypointTarget {
+	id: string;
+	position: THREE.Vector3;
+	intensity?: number;
+	radiusScale?: number;
+}
+
+interface SkywardBeaconVisual {
+	group: THREE.Group;
+	coreMesh: THREE.Mesh;
+	haloMesh: THREE.Mesh;
+	baseRingMesh: THREE.Mesh;
+	coreMat: THREE.MeshBasicMaterial;
+	haloMat: THREE.MeshBasicMaterial;
+	ringMat: THREE.MeshBasicMaterial;
+	phaseOffset: number;
+}
+
 const PAD_OR_GROUND_PATTERN =
 	/(_Pad|_Apron|_Anchor|_Ring|_HazardRing|_Decal|_Logo|_Disc|_Walkway|_Foundation|Terrain|Beacon|Light)/i;
 const LANDER_NAME_PATTERN = /(lander|sample[_\s-]*return|ascent|descent[_\s-]*stage|capsule)/i;
 
+// Faint luminous yellow skyward beam palette
+const SKY_BEACON_CORE_HEX = 0xfef08a; // Soft pale yellow core
+const SKY_BEACON_HALO_HEX = 0xfacc15; // Warm solar yellow outer halo
+
 export class OutpostWorldBuilder {
 	public outpostRoot: THREE.Object3D | null = null;
 	public roverObject: THREE.Object3D | null = null;
+	public roverSystem: OrionRoverSystem | null = null;
+	public astronautController: AstronautController | null = null;
 	public workstationObject: THREE.Object3D | null = null;
 	public storagePodObject: THREE.Object3D | null = null;
 	public landingPadAnchor: THREE.Object3D | null = null;
@@ -53,6 +79,11 @@ export class OutpostWorldBuilder {
 	private rayOrigin = new THREE.Vector3();
 	private groundMeshes: THREE.Object3D[] = [];
 
+	private skyBeamTexture: THREE.CanvasTexture | null = null;
+	private skyBeaconPool: SkywardBeaconVisual[] = [];
+	private skyBeaconContainer = new THREE.Group();
+	private labAnalysisRing: THREE.Mesh | null = null;
+
 	async load(scene: THREE.Scene): Promise<void> {
 		const loader = new GLTFLoader();
 		const gltf = await loader.loadAsync(LunarOutpostConfig.modelUrl);
@@ -61,11 +92,157 @@ export class OutpostWorldBuilder {
 		scene.add(this.outpostRoot);
 		this.outpostRoot.updateMatrixWorld(true);
 
+		this.skyBeamTexture = this.createSkywardBeamTexture();
+		this.skyBeaconContainer.name = 'Skyward_Mission_Beacons';
+		scene.add(this.skyBeaconContainer);
+
 		this.indexSceneNodes(this.outpostRoot);
 		this.assembleLanderOnPad();
 		this.buildDropOffZones(scene);
 		this.buildZoneRings(scene);
 		this.buildSampleBeacons(scene);
+	}
+
+	/**
+	 * Generates a vertical alpha-gradient texture so skyward light pillars glow softly
+	 * at the waypoint base and fade seamlessly into the black lunar sky.
+	 */
+	private createSkywardBeamTexture(): THREE.CanvasTexture {
+		const canvas = document.createElement('canvas');
+		canvas.width = 64;
+		canvas.height = 256;
+		const ctx = canvas.getContext('2d');
+		if (ctx) {
+			const grad = ctx.createLinearGradient(0, 256, 0, 0);
+			grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.0)');
+			grad.addColorStop(0.03, 'rgba(255, 255, 255, 0.95)');
+			grad.addColorStop(0.18, 'rgba(255, 255, 255, 0.62)');
+			grad.addColorStop(0.52, 'rgba(255, 255, 255, 0.24)');
+			grad.addColorStop(0.84, 'rgba(255, 255, 255, 0.06)');
+			grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+			ctx.fillStyle = grad;
+			ctx.fillRect(0, 0, 64, 256);
+		}
+		const tex = new THREE.CanvasTexture(canvas);
+		tex.wrapS = THREE.ClampToEdgeWrapping;
+		tex.wrapT = THREE.ClampToEdgeWrapping;
+		return tex;
+	}
+
+	private createSkywardPillarMaterial(
+		colorHex: number,
+		baseOpacity: number
+	): THREE.MeshBasicMaterial {
+		return new THREE.MeshBasicMaterial({
+			color: colorHex,
+			map: this.skyBeamTexture,
+			transparent: true,
+			opacity: baseOpacity,
+			blending: THREE.AdditiveBlending,
+			side: THREE.DoubleSide,
+			depthWrite: false,
+			fog: false
+		});
+	}
+
+	private acquireSkyBeaconVisual(index: number): SkywardBeaconVisual {
+		while (this.skyBeaconPool.length <= index) {
+			const idx = this.skyBeaconPool.length;
+			const group = new THREE.Group();
+			group.name = `Skyward_Waypoint_Pillar_${idx}`;
+
+			const beamHeight = 96;
+			const coreMat = this.createSkywardPillarMaterial(SKY_BEACON_CORE_HEX, 0.22);
+			const coreMesh = new THREE.Mesh(
+				new THREE.CylinderGeometry(0.14, 0.42, beamHeight, 16, 1, true),
+				coreMat
+			);
+			coreMesh.position.y = beamHeight * 0.5;
+			coreMesh.renderOrder = 4;
+
+			const haloMat = this.createSkywardPillarMaterial(SKY_BEACON_HALO_HEX, 0.11);
+			const haloMesh = new THREE.Mesh(
+				new THREE.CylinderGeometry(0.65, 1.35, beamHeight, 16, 1, true),
+				haloMat
+			);
+			haloMesh.position.y = beamHeight * 0.5;
+			haloMesh.renderOrder = 3;
+
+			const ringMat = new THREE.MeshBasicMaterial({
+				color: SKY_BEACON_HALO_HEX,
+				transparent: true,
+				opacity: 0.36,
+				blending: THREE.AdditiveBlending,
+				side: THREE.DoubleSide,
+				depthWrite: false,
+				fog: false
+			});
+			const baseRingMesh = new THREE.Mesh(new THREE.RingGeometry(0.65, 1.05, 28), ringMat);
+			baseRingMesh.rotation.x = -Math.PI / 2;
+			baseRingMesh.position.y = 0.08;
+
+			group.add(coreMesh, haloMesh, baseRingMesh);
+			this.skyBeaconContainer.add(group);
+
+			this.skyBeaconPool.push({
+				group,
+				coreMesh,
+				haloMesh,
+				baseRingMesh,
+				coreMat,
+				haloMat,
+				ringMat,
+				phaseOffset: idx * 0.85
+			});
+		}
+		return this.skyBeaconPool[index];
+	}
+
+	/**
+	 * Updates the faint yellow skyward light beams for all active mission waypoints.
+	 */
+	public updateSkywardBeacons(
+		targets: SkywardWaypointTarget[],
+		elapsedSec: number,
+		hasPendingLabAnalysis = false
+	) {
+		for (let i = 0; i < this.skyBeaconPool.length; i++) {
+			if (i >= targets.length) {
+				this.skyBeaconPool[i].group.visible = false;
+			}
+		}
+
+		for (let i = 0; i < targets.length; i++) {
+			const target = targets[i];
+			const visual = this.acquireSkyBeaconVisual(i);
+			visual.group.visible = true;
+			visual.group.position.copy(target.position);
+
+			const intensity = target.intensity ?? 1.0;
+			const rScale = target.radiusScale ?? 1.0;
+			const pulse = 0.85 + Math.sin(elapsedSec * 2.4 + visual.phaseOffset) * 0.15;
+
+			visual.coreMesh.scale.set(rScale, 1, rScale);
+			visual.haloMesh.scale.set(rScale, 1, rScale);
+			visual.baseRingMesh.scale.setScalar(
+				rScale * (0.94 + Math.sin(elapsedSec * 3.0 + visual.phaseOffset) * 0.08)
+			);
+
+			visual.coreMat.opacity = 0.2 * intensity * pulse;
+			visual.haloMat.opacity = 0.1 * intensity * pulse;
+			visual.ringMat.opacity = 0.34 * intensity * pulse;
+		}
+
+		if (this.labAnalysisRing) {
+			const mat = this.labAnalysisRing.material as THREE.MeshBasicMaterial;
+			if (hasPendingLabAnalysis) {
+				mat.color.setHex(SKY_BEACON_HALO_HEX);
+				mat.opacity = 0.65 + Math.sin(elapsedSec * 3.5) * 0.25;
+			} else {
+				mat.color.setHex(0x38bdf8);
+				mat.opacity = 0.45;
+			}
+		}
 	}
 
 	private indexSceneNodes(root: THREE.Object3D) {
@@ -195,10 +372,10 @@ export class OutpostWorldBuilder {
 			const ringMesh = new THREE.Mesh(
 				new THREE.RingGeometry(2.8, 3.35, 36),
 				new THREE.MeshBasicMaterial({
-					color: 0xf59e0b,
+					color: 0xfacc15,
 					side: THREE.DoubleSide,
 					transparent: true,
-					opacity: 0.9
+					opacity: 0.85
 				})
 			);
 			ringMesh.rotation.x = -Math.PI / 2;
@@ -206,18 +383,15 @@ export class OutpostWorldBuilder {
 			ringMesh.name = `DropOff_Ring_${def.id}`;
 			scene.add(ringMesh);
 
+			// Tall faint yellow skyward pillar for the drop-off zone
+			const beaconHeight = 92;
 			const beaconMesh = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.14, 0.55, 6.8, 16, 1, true),
-				new THREE.MeshBasicMaterial({
-					color: 0xf59e0b,
-					transparent: true,
-					opacity: 0.24,
-					side: THREE.DoubleSide,
-					depthWrite: false
-				})
+				new THREE.CylinderGeometry(0.18, 0.65, beaconHeight, 16, 1, true),
+				this.createSkywardPillarMaterial(SKY_BEACON_HALO_HEX, 0.18)
 			);
-			beaconMesh.position.set(position.x, hit.y + 3.4, position.z);
+			beaconMesh.position.set(position.x, hit.y + beaconHeight * 0.5, position.z);
 			beaconMesh.name = `DropOff_Beacon_${def.id}`;
+			beaconMesh.renderOrder = 3;
 			scene.add(beaconMesh);
 
 			this.dropOffZones.push({
@@ -323,32 +497,30 @@ export class OutpostWorldBuilder {
 				color: 0x38bdf8,
 				side: THREE.DoubleSide,
 				transparent: true,
-				opacity: 0.85
+				opacity: 0.65
 			})
 		);
 		labRing.rotation.x = -Math.PI / 2;
 		labRing.position.set(this.workstationPos.x, labHit.y + 0.08, this.workstationPos.z + 2.2);
 		labRing.name = 'Geology_Analysis_Ring';
 		scene.add(labRing);
+		this.labAnalysisRing = labRing;
 	}
 
 	private buildSampleBeacons(scene: THREE.Scene) {
+		const beaconHeight = 96;
 		for (const [nodeName, sampleObj] of this.sampleNodes.entries()) {
 			const pos = new THREE.Vector3();
 			sampleObj.getWorldPosition(pos);
-			const isMetal = nodeName.startsWith('Sample_Metal_');
 
+			// Faint yellow skyward light pillar for geological sample waypoints
 			const beacon = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.12, 0.45, 7.5, 16, 1, true),
-				new THREE.MeshBasicMaterial({
-					color: isMetal ? 0xfbbf24 : 0x38bdf8,
-					transparent: true,
-					opacity: 0.28,
-					side: THREE.DoubleSide,
-					depthWrite: false
-				})
+				new THREE.CylinderGeometry(0.15, 0.52, beaconHeight, 16, 1, true),
+				this.createSkywardPillarMaterial(SKY_BEACON_CORE_HEX, 0.2)
 			);
-			beacon.position.set(pos.x, pos.y + 3.6, pos.z);
+			beacon.position.set(pos.x, pos.y + beaconHeight * 0.5, pos.z);
+			beacon.renderOrder = 3;
+			beacon.visible = false; // Activated automatically once exploration phase begins
 			scene.add(beacon);
 			this.sampleBeacons.set(nodeName, beacon);
 		}

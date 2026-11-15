@@ -72,6 +72,7 @@ const EXCLUDED_KEYWORDS = [
 export class OutpostCollisionSystem {
 	private staticColliders: OutpostCollider[] = [];
 	private crateColliders: { crate: THREE.Object3D; collider: ObbCollider }[] = [];
+	private scratchCratePos = new THREE.Vector3();
 	private roverCollider: ObbCollider = {
 		kind: 'obb',
 		name: 'Orion_Moon_Rover_Body',
@@ -244,12 +245,11 @@ export class OutpostCollisionSystem {
 				) {
 					continue;
 				}
-				const wp = new THREE.Vector3();
-				entry.crate.getWorldPosition(wp);
-				entry.collider.x = wp.x;
-				entry.collider.z = wp.z;
-				entry.collider.minY = wp.y - 0.45;
-				entry.collider.maxY = wp.y + 0.45;
+				entry.crate.getWorldPosition(this.scratchCratePos);
+				entry.collider.x = this.scratchCratePos.x;
+				entry.collider.z = this.scratchCratePos.z;
+				entry.collider.minY = this.scratchCratePos.y - 0.45;
+				entry.collider.maxY = this.scratchCratePos.y + 0.45;
 				if (entMaxY < entry.collider.minY || entMinY > entry.collider.maxY) continue;
 				this.pushOutOfCollider(pos, radius, entry.collider);
 			}

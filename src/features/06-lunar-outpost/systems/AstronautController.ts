@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { LunarOutpostConfig } from '../lunar-outpost.config';
-import { characterModelLoader } from './CharacterModelLoader';
+import { characterModelLoader, type EvaSuitRigRefs } from './CharacterModelLoader';
+import type { OrionRoverSystem } from './OrionRoverSystem';
 import type { OutpostCollisionSystem } from './OutpostCollisionSystem';
 import type { OutpostWorldBuilder } from './OutpostWorldBuilder';
 
@@ -13,13 +14,17 @@ export class AstronautController {
 	private velocityY = 0;
 	private isGrounded = true;
 	private walkCycle = 0;
+	private bobAmount = 0;
 	private suitVisual: THREE.Group | null = null;
+	private suitRig: EvaSuitRigRefs | null = null;
 
 	async init(scene: THREE.Scene, spawnX: number, spawnZ: number, world: OutpostWorldBuilder) {
+		world.astronautController = this;
 		this.suitVisual = await characterModelLoader.createEvaSuitInstance({
 			accentHex: 0xe6480d, // Artemis Orange-Red stripe for Player
 			hideVisorForFirstPerson: true
 		});
+		this.suitRig = (this.suitVisual.userData?.rig as EvaSuitRigRefs) ?? null;
 		this.root.add(this.suitVisual);
 
 		const hit = world.sampleSurfaceAt(spawnX, spawnZ);
@@ -31,16 +36,39 @@ export class AstronautController {
 	pickUpOrDropCrate(
 		crates: THREE.Object3D[],
 		scene: THREE.Scene,
-		world: OutpostWorldBuilder
+		world: OutpostWorldBuilder,
+		rover?: OrionRoverSystem
 	): string | null {
+		const activeRover = rover ?? world.roverSystem ?? null;
+
 		if (this.carryingCrate) {
-			// If standing inside an active drop-off ring, drop directly onto that zone's center
+			const heldCrate = this.carryingCrate;
+
+			// 1. Check if standing near the Rover's rear cargo rack to stick the box onto the car
 			const nearbyZone = world.findDropOffZoneNear(
 				this.root.position,
 				LunarOutpostConfig.physics.crateDeliverRadius,
 				true
 			);
+			const nearRover = activeRover?.isNearCargoRack(this.root.position) ?? false;
 
+			let preferRover = nearRover;
+			if (nearRover && nearbyZone && activeRover?.rover) {
+				const distToZone = Math.hypot(
+					this.root.position.x - nearbyZone.position.x,
+					this.root.position.z - nearbyZone.position.z
+				);
+				const distToRover = this.root.position.distanceTo(activeRover.rover.position);
+				preferRover = distToRover <= distToZone;
+			}
+
+			if (preferRover && activeRover) {
+				this.carryingCrate = null;
+				const result = activeRover.tryPlaceCrateFromAstronaut(heldCrate, scene, world);
+				return result.message;
+			}
+
+			// 2. Otherwise drop onto a station drop-off zone or onto the lunar regolith in front
 			const dropPos = nearbyZone
 				? nearbyZone.position.clone()
 				: new THREE.Vector3(0, 0, 1.35)
@@ -48,26 +76,41 @@ export class AstronautController {
 						.add(this.root.position);
 			const hit = world.sampleSurfaceAt(dropPos.x, dropPos.z);
 
-			scene.attach(this.carryingCrate);
-			this.carryingCrate.position.set(dropPos.x, hit.y + 0.39, dropPos.z);
-			this.carryingCrate.rotation.set(0, nearbyZone ? 0 : this.root.rotation.y, 0);
+			scene.attach(heldCrate);
+			heldCrate.position.set(dropPos.x, hit.y + 0.39, dropPos.z);
+			heldCrate.rotation.set(0, nearbyZone ? 0 : this.root.rotation.y, 0);
 
-			const droppedName = this.carryingCrate.name;
+			const droppedName = heldCrate.name;
 			this.carryingCrate = null;
 			return `Placed ${droppedName}`;
 		}
 
+		// Find closest loose crate on the ground
 		let closest: THREE.Object3D | null = null;
 		let bestDist = LunarOutpostConfig.physics.interactionRadius;
 		const cratePos = new THREE.Vector3();
 
 		for (const crate of crates) {
 			if (crate.userData?.delivered) continue;
+			if (activeRover?.isCrateFalling(crate)) continue;
+			if (crate === activeRover?.loadedCrate) continue;
 			crate.getWorldPosition(cratePos);
 			const d = cratePos.distanceTo(this.root.position);
 			if (d < bestDist) {
 				bestDist = d;
 				closest = crate;
+			}
+		}
+
+		// If standing near the Rover and it has a box stuck on its rear rack, allow taking it off
+		if (!closest && activeRover?.loadedCrate && activeRover.isNearCargoRack(this.root.position)) {
+			const taken = activeRover.takeLoadedCrateForAstronaut();
+			if (taken) {
+				this.root.attach(taken);
+				taken.position.set(0, 0.92, 0.78);
+				taken.rotation.set(0, 0, 0);
+				this.carryingCrate = taken;
+				return `Took ${taken.name} from Rover rear rack`;
 			}
 		}
 
@@ -147,15 +190,83 @@ export class AstronautController {
 			this.isGrounded = true;
 		}
 
+		const targetBob = isMoving && this.isGrounded ? Math.abs(Math.sin(this.walkCycle)) * 0.038 : 0;
+		this.bobAmount = THREE.MathUtils.lerp(this.bobAmount, targetBob, Math.min(1, dt * 14));
+
 		if (this.suitVisual) {
-			this.suitVisual.position.y =
-				isMoving && this.isGrounded ? Math.abs(Math.sin(this.walkCycle)) * 0.035 : 0;
+			this.suitVisual.position.y = this.bobAmount;
+		}
+
+		if (this.carryingCrate) {
+			this.carryingCrate.position.y = 0.92 + this.bobAmount * 0.65;
+		}
+
+		this.animateSuitLimbs(isMoving);
+	}
+
+	private animateSuitLimbs(isMoving: boolean) {
+		if (!this.suitRig) return;
+		const {
+			leftUpperArm,
+			rightUpperArm,
+			leftForearm,
+			rightForearm,
+			leftThigh,
+			rightThigh,
+			restRotations
+		} = this.suitRig;
+
+		const swing = isMoving && this.isGrounded ? Math.sin(this.walkCycle) * 0.45 : 0;
+
+		if (leftThigh) {
+			const rest = restRotations.get(leftThigh);
+			leftThigh.rotation.x = (rest?.x ?? 0) + swing;
+		}
+		if (rightThigh) {
+			const rest = restRotations.get(rightThigh);
+			rightThigh.rotation.x = (rest?.x ?? 0) - swing;
+		}
+
+		if (this.carryingCrate) {
+			// Hold arms forward supporting the supply crate
+			if (leftUpperArm) {
+				const rest = restRotations.get(leftUpperArm);
+				leftUpperArm.rotation.x = (rest?.x ?? 0) - 0.72;
+			}
+			if (rightUpperArm) {
+				const rest = restRotations.get(rightUpperArm);
+				rightUpperArm.rotation.x = (rest?.x ?? 0) - 0.72;
+			}
+			if (leftForearm) {
+				const rest = restRotations.get(leftForearm);
+				leftForearm.rotation.x = (rest?.x ?? 0) - 0.45;
+			}
+			if (rightForearm) {
+				const rest = restRotations.get(rightForearm);
+				rightForearm.rotation.x = (rest?.x ?? 0) - 0.45;
+			}
+		} else {
+			if (leftUpperArm) {
+				const rest = restRotations.get(leftUpperArm);
+				leftUpperArm.rotation.x = (rest?.x ?? 0) - swing * 0.65;
+			}
+			if (rightUpperArm) {
+				const rest = restRotations.get(rightUpperArm);
+				rightUpperArm.rotation.x = (rest?.x ?? 0) + swing * 0.65;
+			}
+			if (leftForearm) {
+				const rest = restRotations.get(leftForearm);
+				leftForearm.rotation.x = (rest?.x ?? 0) - 0.15;
+			}
+			if (rightForearm) {
+				const rest = restRotations.get(rightForearm);
+				rightForearm.rotation.x = (rest?.x ?? 0) - 0.15;
+			}
 		}
 	}
 
 	applyFirstPersonCamera(camera: THREE.PerspectiveCamera) {
-		const bobY = Math.abs(Math.sin(this.walkCycle)) * 0.04;
-		const eyeOffset = new THREE.Vector3(0, 1.66 + bobY, 0.25).applyAxisAngle(
+		const eyeOffset = new THREE.Vector3(0, 1.66 + this.bobAmount, 0.25).applyAxisAngle(
 			new THREE.Vector3(0, 1, 0),
 			this.yawRad
 		);

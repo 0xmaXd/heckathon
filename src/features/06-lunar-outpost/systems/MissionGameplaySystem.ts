@@ -11,7 +11,11 @@ import type {
 import type { AstronautController } from './AstronautController';
 import type { OrionRoverSystem } from './OrionRoverSystem';
 import type { OutpostMachinerySystem } from './OutpostMachinerySystem';
-import type { OutpostWorldBuilder, WorldDropOffZone } from './OutpostWorldBuilder';
+import type {
+	OutpostWorldBuilder,
+	SkywardWaypointTarget,
+	WorldDropOffZone
+} from './OutpostWorldBuilder';
 
 export class MissionGameplaySystem {
 	public phase: OutpostPhase = 'briefing';
@@ -24,6 +28,7 @@ export class MissionGameplaySystem {
 	private maintenanceActive = false;
 	private maintenanceTriggeredOnce = false;
 	private launchSequenceTimer = 0;
+	private elapsedSec = 0;
 
 	dismissDiscoveryCard() {
 		this.activeDiscoveryCard = null;
@@ -34,7 +39,7 @@ export class MissionGameplaySystem {
 			this.phase = 'resupply';
 			this.speaker = 'Commander Maya';
 			this.dialogue =
-				'Orders active! Pick up any supply box [F] (or haul via Rover [E]) and drop 1 box at each of the 5 stations: Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock.';
+				'Orders active! Pick up any supply box [F] (or stick 1 box onto the back of the Rover) and drop 1 box at each of the 5 stations: Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock.';
 		}
 	}
 
@@ -175,6 +180,7 @@ export class MissionGameplaySystem {
 		solar: SolarCycleState,
 		isPointerLocked: boolean
 	): OutpostHudSnapshot {
+		this.elapsedSec += dt;
 		const actorPos = rover.isSeated && rover.rover ? rover.rover.position : astronaut.root.position;
 
 		// Auto-activate resupply phase if player picks up a crate or boards the rover directly
@@ -190,8 +196,14 @@ export class MissionGameplaySystem {
 			const cratePos = new THREE.Vector3();
 			for (const crate of world.supplyCrates) {
 				if (crate.userData?.delivered) continue;
-				// Must be dropped off (not currently held by astronaut or strapped to rover)
-				if (crate === astronaut.carryingCrate || crate === rover.loadedCrate) continue;
+				// Must be landed on the ground (not held by astronaut, stuck to rover, or mid-fall)
+				if (
+					crate === astronaut.carryingCrate ||
+					crate === rover.loadedCrate ||
+					rover.isCrateFalling(crate)
+				) {
+					continue;
+				}
 
 				crate.getWorldPosition(cratePos);
 				const targetZone = world.findDropOffZoneNear(
@@ -216,6 +228,8 @@ export class MissionGameplaySystem {
 				world.landerAssembly.position.y += ascentSpeed * dt;
 			}
 		}
+
+		this.syncSkywardMissionBeacons(world, astronaut, rover);
 
 		const actionPrompt = this.computeActionPrompt(
 			actorPos,
@@ -268,6 +282,91 @@ export class MissionGameplaySystem {
 		};
 	}
 
+	/**
+	 * Routes faint yellow skyward light pillars to every active waypoint across all phases
+	 * so objectives stand out clearly across the lunar crater terrain.
+	 */
+	private syncSkywardMissionBeacons(
+		world: OutpostWorldBuilder,
+		astronaut: AstronautController,
+		rover: OrionRoverSystem
+	) {
+		const waypoints: SkywardWaypointTarget[] = [];
+		const isSupplyPhase = this.phase === 'briefing' || this.phase === 'resupply';
+
+		// Drop-off ring pillars only stay visible during supply phases
+		for (const zone of world.dropOffZones) {
+			zone.beaconMesh.visible = isSupplyPhase && !zone.delivered;
+		}
+
+		// Sample pillars only appear during exploration for uncollected nodes
+		for (const sample of this.samples) {
+			const beacon = world.sampleBeacons.get(sample.nodeName);
+			if (beacon) {
+				beacon.visible = this.phase === 'exploration' && !sample.collected;
+			}
+		}
+
+		if (isSupplyPhase) {
+			const holdingCrate = astronaut.carryingCrate !== null || rover.loadedCrate !== null;
+			if (!holdingCrate) {
+				// Point skyward beams to undelivered supply crates so the player can spot them easily
+				const cratePos = new THREE.Vector3();
+				for (const crate of world.supplyCrates) {
+					if (crate.userData?.delivered) continue;
+					crate.getWorldPosition(cratePos);
+					const hit = world.sampleSurfaceAt(cratePos.x, cratePos.z);
+					waypoints.push({
+						id: `crate_${crate.name}`,
+						position: new THREE.Vector3(cratePos.x, hit.y, cratePos.z),
+						intensity: 0.9,
+						radiusScale: 0.72
+					});
+				}
+			}
+		}
+
+		// Solar panel dust maintenance beacons take priority when active
+		if (this.maintenanceActive) {
+			const dustPos = new THREE.Vector3();
+			for (let i = 0; i < world.solarDustLayers.length; i++) {
+				const dust = world.solarDustLayers[i];
+				if (!dust.visible) continue;
+				dust.getWorldPosition(dustPos);
+				const hit = world.sampleSurfaceAt(dustPos.x, dustPos.z);
+				waypoints.push({
+					id: `solar_dust_${i}`,
+					position: new THREE.Vector3(dustPos.x, hit.y, dustPos.z),
+					intensity: 1.05,
+					radiusScale: 0.85
+				});
+			}
+		}
+
+		const hasPendingAnalysis = this.samples.some((s) => s.collected && !s.analyzed);
+		if (this.phase === 'exploration' && hasPendingAnalysis) {
+			const labHit = world.sampleSurfaceAt(world.workstationPos.x, world.workstationPos.z);
+			waypoints.push({
+				id: 'geology_workstation',
+				position: new THREE.Vector3(world.workstationPos.x, labHit.y, world.workstationPos.z + 2.0),
+				intensity: 1.15,
+				radiusScale: 1.15
+			});
+		}
+
+		if (this.phase === 'finale_ready') {
+			const padHit = world.sampleSurfaceAt(world.launchPadPos.x, world.launchPadPos.z);
+			waypoints.push({
+				id: 'landing_pad_launch',
+				position: new THREE.Vector3(world.launchPadPos.x, padHit.y, world.launchPadPos.z),
+				intensity: 1.25,
+				radiusScale: 1.5
+			});
+		}
+
+		world.updateSkywardBeacons(waypoints, this.elapsedSec, hasPendingAnalysis);
+	}
+
 	private computeActionPrompt(
 		actorPos: THREE.Vector3,
 		world: OutpostWorldBuilder,
@@ -280,20 +379,32 @@ export class MissionGameplaySystem {
 		const nearbyDropZone = isSupplyPhase
 			? world.findDropOffZoneNear(actorPos, LunarOutpostConfig.physics.crateDeliverRadius, true)
 			: null;
+		const nearRoverCargo = !rover.isSeated && rover.isNearCargoRack(actorPos);
 
-		if (roverState.canBoard) {
-			return 'Press [E] to Drive Orion Moon Rover';
-		}
 		if (rover.isSeated) {
 			if (isSupplyPhase) {
 				if (rover.loadedCrate) {
 					return nearbyDropZone
 						? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
-						: 'Drive to any glowing drop-off ring (Command Control, Electricity, etc.) • [F] Drop';
+						: 'Box Secured on Rear Rack (1/1) • Drive to Station Ring & Press [F] to Unload';
 				}
-				return 'Drive near any Supply Box & press [F] to Load • [E] Exit Rover';
+				return 'Drive near any Supply Box & press [F] to Stick onto Rear Rack • [E] Exit Rover';
 			}
 			return 'WASD Drive • [L] Headlights • [E] Exit Rover';
+		}
+
+		if (astronaut.carryingCrate && nearRoverCargo) {
+			return rover.loadedCrate
+				? 'Press [F] to Place on Rover (Full 1/1 — Extra Box Will Fall Off Side)'
+				: 'Press [F] to Stick Supply Box onto Top-Back of Rover';
+		}
+
+		if (!astronaut.carryingCrate && nearRoverCargo && rover.loadedCrate) {
+			return 'Press [F] to Take Supply Box from Rover (or [E] to Drive)';
+		}
+
+		if (roverState.canBoard) {
+			return 'Press [E] to Drive Orion Moon Rover';
 		}
 		if (machinery.hasDustyPanelNearby(actorPos)) {
 			return 'Press [E] to Wipe Lunar Dust off Solar Panel';
@@ -327,9 +438,9 @@ export class MissionGameplaySystem {
 			if (astronaut.carryingCrate) {
 				return nearbyDropZone
 					? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
-					: 'Take Box to Command Control, Electricity, Storage Pod, Lab, or Airlock • [F] Drop';
+					: 'Take Box to Rover Rear Rack or Station Ring (Command Control, Lab, etc.) • [F] Drop';
 			}
-			return 'Press [F] to Pick Up Supply Box (or [E] at Rover to Haul)';
+			return 'Press [F] to Pick Up Supply Box (Stick 1 Box onto Rover Rear Rack)';
 		}
 		if (machinery.isNearAirlock(actorPos)) {
 			return 'Press [E] to Toggle Airlock Hatch';

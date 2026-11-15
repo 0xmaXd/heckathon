@@ -94,16 +94,17 @@ export class OutpostMachinerySystem {
 			);
 		}
 
+		// Gentle faint-yellow skyward shimmer on sample and drop-off pillars
 		for (const beacon of this.world.sampleBeacons.values()) {
 			if (!beacon.visible) continue;
 			const mat = beacon.material as THREE.MeshBasicMaterial;
-			mat.opacity = 0.22 + Math.sin(this.elapsed * 2.8) * 0.08;
+			mat.opacity = 0.18 + Math.sin(this.elapsed * 2.5) * 0.05;
 		}
 
 		for (const zone of this.world.dropOffZones) {
 			if (!zone.beaconMesh.visible) continue;
 			const mat = zone.beaconMesh.material as THREE.MeshBasicMaterial;
-			mat.opacity = 0.18 + Math.sin(this.elapsed * 2.6) * 0.08;
+			mat.opacity = 0.16 + Math.sin(this.elapsed * 2.3) * 0.05;
 		}
 	}
 }

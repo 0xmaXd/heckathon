@@ -125,9 +125,10 @@ export class LunarSunCycleSystem {
 		this.sunCoreMat.color.copy(this.sunLight.color);
 		this.sunCoronaMat.opacity = THREE.MathUtils.smoothstep(elevationDeg, -8, 4) * 0.95;
 
-		// Keep Earthshine strong so terrain contours are always legible even at night
-		this.earthshineHemiLight.intensity = THREE.MathUtils.lerp(1.15, 1.65, dayFactor);
-		this.earthshineBounceLight.intensity = THREE.MathUtils.lerp(1.15, 1.45, dayFactor);
+		// Keep Earthshine strong so terrain contours are always legible even at night,
+		// while slightly dimming ambient fill at night so skyward mission beacons stand out clearly
+		this.earthshineHemiLight.intensity = THREE.MathUtils.lerp(1.05, 1.65, dayFactor);
+		this.earthshineBounceLight.intensity = THREE.MathUtils.lerp(1.05, 1.45, dayFactor);
 
 		const lampIntensity = (1 - dayFactor) * 32.0;
 		for (const lamp of this.outpostLampLights) {

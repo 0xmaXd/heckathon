@@ -62,3 +62,5 @@ rng and state
 Orbital control is in the scene manager, of course!
 
 There are some bugs, like two suns, and some ray cast issues.
+
+DEBUG commands are F2, and CTRL + 1, 2, 3, 4, 5, 6.

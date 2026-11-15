@@ -2,6 +2,8 @@ import type { DiscoveryCardData, SurfaceType } from './lunar-outpost.types';
 
 export const LunarOutpostConfig = {
 	modelUrl: '/models/moon_outpost.glb',
+	// Place your EVA_Suit .glb file from room 07 at static/models/eva_astronaut.glb (or update path here)
+	characterModelUrl: '/models/eva_astronaut.glb',
 
 	physics: {
 		lunarGravity: 1.62,
@@ -9,6 +11,8 @@ export const LunarOutpostConfig = {
 		evaSprintSpeed: 7.4,
 		evaJumpVelocity: 3.6,
 		interactionRadius: 4.6,
+		npcTalkRadius: 4.6,
+		npcAmbientRadius: 7.8,
 		crateDeliverRadius: 6.5,
 		workstationRadius: 5.5,
 		launchPadRadius: 9.0

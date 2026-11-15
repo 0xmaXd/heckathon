@@ -59,7 +59,7 @@
 					</p>
 				{:else}
 					<div class="space-y-1.5 text-xs">
-						{#each hud.samples as s}
+						{#each hud.samples as s (s)}
 							<div class="flex items-center justify-between gap-2">
 								<span
 									class={s.analyzed
@@ -80,6 +80,16 @@
 			</div>
 		</div>
 
+		<!-- Ambient Room 07 NPC Radio Chatter when standing near Maya & Leo -->
+		{#if hud.npcComms?.ambientLine && !hud.npcComms?.activeTurn}
+			<div
+				class="absolute bottom-32 left-1/2 max-w-lg -translate-x-1/2 rounded-xl border border-cyan-400/40 bg-slate-950/85 px-4 py-2.5 text-xs shadow-lg backdrop-blur-md"
+			>
+				<span class="font-bold text-cyan-300">{hud.npcComms.ambientSpeaker}:</span>
+				<span class="text-slate-200"> "{hud.npcComms.ambientLine}"</span>
+			</div>
+		{/if}
+
 		<!-- Leo Solar Dust Maintenance Alert -->
 		{#if hud.maintenanceAlert.active}
 			<div
@@ -91,7 +101,7 @@
 		{/if}
 
 		<!-- Contextual Action Prompt -->
-		{#if hud.actionPrompt}
+		{#if hud.actionPrompt && !hud.npcComms?.activeTurn}
 			<div
 				class="absolute bottom-20 left-1/2 -translate-x-1/2 rounded-full border border-sky-400/70 bg-sky-950/90 px-5 py-2.5 text-sm font-medium text-sky-100 shadow-lg"
 			>
@@ -129,9 +139,60 @@
 			>
 				<strong>WASD</strong> Move •
 				<strong>{hud.isPointerLocked ? 'Mouse' : 'Click / Drag'}</strong>
-				Look • <strong>[E]</strong> Interact / Drive Rover • <strong>[F]</strong> Carry / Load Crate
+				Look • <strong>[T]</strong> Talk • <strong>[E]</strong> Interact / Drive •
+				<strong>[F]</strong> Carry
 			</div>
 		</div>
+
+		<!-- Interactive Suit-to-Suit NPC Conversation Modal -->
+		{#if hud.npcComms?.activeTurn}
+			{@const turn = hud.npcComms.activeTurn}
+			<div class="pointer-events-auto fixed inset-x-0 bottom-16 z-30 flex justify-center px-4">
+				<div
+					class="w-full max-w-2xl rounded-2xl border-2 border-cyan-400/80 bg-slate-900/95 p-5 shadow-2xl backdrop-blur-md"
+				>
+					<div class="mb-2 flex items-center justify-between">
+						<span class="text-xs font-bold tracking-widest text-cyan-400 uppercase">
+							Suit-to-Suit Comms • Room 07 Channel
+						</span>
+						<button
+							type="button"
+							onclick={() => lunarOutpostScene.closeNpcDialogue()}
+							class="cursor-pointer rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-700"
+						>
+							[ESC] Close
+						</button>
+					</div>
+
+					<div class="mb-1 text-base font-bold text-amber-300">{turn.speaker}</div>
+					<p class="mb-3 text-sm leading-relaxed text-slate-100">"{turn.text}"</p>
+
+					{#if turn.companionInterjection}
+						<div
+							class="mb-4 rounded-lg border border-slate-700/80 bg-slate-800/80 px-3 py-2 text-xs"
+						>
+							<span class="font-bold text-sky-300">{turn.companionInterjection.speaker}:</span>
+							<span class="text-slate-200"> "{turn.companionInterjection.text}"</span>
+						</div>
+					{/if}
+
+					<div class="space-y-2">
+						{#each turn.choices as choice, idx (choice.id)}
+							<button
+								type="button"
+								onclick={() => lunarOutpostScene.selectNpcDialogueChoice(choice.id)}
+								class="flex w-full cursor-pointer items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/90 px-4 py-2.5 text-left text-xs font-medium text-slate-100 transition hover:border-cyan-400 hover:bg-slate-800"
+							>
+								<span class="rounded bg-cyan-500/20 px-2 py-0.5 font-mono text-cyan-300">
+									{idx + 1}
+								</span>
+								<span>{choice.label}</span>
+							</button>
+						{/each}
+					</div>
+				</div>
+			</div>
+		{/if}
 
 		<!-- NASA Discovery Card Modal -->
 		{#if hud.activeDiscoveryCard}
@@ -184,7 +245,7 @@
 					<div
 						class="grid grid-cols-2 gap-2 rounded-xl border border-slate-700 bg-slate-900/90 p-4 text-left text-xs"
 					>
-						{#each hud.samples as s}
+						{#each hud.samples as s (s)}
 							<div class="text-emerald-400">✓ {s.title}</div>
 						{/each}
 					</div>

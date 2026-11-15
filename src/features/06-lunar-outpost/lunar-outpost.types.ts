@@ -5,6 +5,34 @@ export type SampleCategory = 'Metal' | 'Non-Metal';
 export type SurfaceType =
 	'Sintered_Regolith' | 'Compacted_Wheel_Ruts' | 'Graded_Crater_Trail' | 'Loose_Regolith';
 
+export type NpcId = 'maya' | 'leo';
+
+export interface NpcDialogueChoice {
+	id: string;
+	label: string;
+	nextNodeId: string | null;
+}
+
+export interface NpcDialogueTurn {
+	npcId: NpcId;
+	nodeId: string;
+	speaker: 'Commander Maya' | 'Geologist Leo';
+	text: string;
+	companionInterjection?: {
+		speaker: 'Commander Maya' | 'Geologist Leo';
+		text: string;
+	};
+	choices: NpcDialogueChoice[];
+}
+
+export interface NpcCommsState {
+	activeTurn: NpcDialogueTurn | null;
+	nearbyNpcName: 'Commander Maya' | 'Geologist Leo' | null;
+	talkPrompt: string | null;
+	ambientSpeaker: 'Commander Maya' | 'Geologist Leo' | null;
+	ambientLine: string | null;
+}
+
 export interface DiscoveryCardData {
 	id: string;
 	nodeName: string;
@@ -61,4 +89,5 @@ export interface OutpostHudSnapshot {
 	solar: SolarCycleState;
 	scannerPowerPct: number;
 	isPointerLocked: boolean;
+	npcComms?: NpcCommsState;
 }

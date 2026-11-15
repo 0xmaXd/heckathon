@@ -1,9 +1,9 @@
 {
 	"outpostName": "Orion Moon Outpost",
-	"locationLabel": "Lunar South Pole — Shackleton Rim Sector",
+	"locationLabel": "Lunar South Pole — Shackleton Rim Sector (Room 07 Staging)",
 	"briefing": {
 		"speaker": "Commander Maya",
-		"dialogue": "Welcome to Orion Moon Outpost! First, help us resupply the base: hop into the Orion Rover with [E] or carry 6 Supply Crates from the landing zone to the Storage Pod drop ring."
+		"dialogue": "Welcome to Orion Moon Outpost! Talk with Leo and me here at Room 07 [T], or help resupply the base: hop into the Orion Rover with [E] or carry 6 Supply Crates to the Storage Pod drop ring."
 	},
 	"explorationStart": {
 		"speaker": "Geologist Leo",

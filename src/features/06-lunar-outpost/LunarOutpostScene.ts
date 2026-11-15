@@ -9,11 +9,13 @@ import {
 import { playerController } from '../../core/player/PlayerController.svelte';
 import { lunarOutpostStore } from './lunarOutpostStore.svelte';
 import { AstronautController } from './systems/AstronautController';
+import { characterModelLoader } from './systems/CharacterModelLoader';
 import { LunarSunCycleSystem } from './systems/LunarSunCycleSystem';
 import { MissionGameplaySystem } from './systems/MissionGameplaySystem';
 import { OrionRoverSystem } from './systems/OrionRoverSystem';
 import { OutpostCollisionSystem } from './systems/OutpostCollisionSystem';
 import { OutpostMachinerySystem } from './systems/OutpostMachinerySystem';
+import { OutpostNpcSystem } from './systems/OutpostNpcSystem';
 import { OutpostWorldBuilder } from './systems/OutpostWorldBuilder';
 
 export class LunarOutpostScene implements GameScene, CameraController {
@@ -29,6 +31,7 @@ export class LunarOutpostScene implements GameScene, CameraController {
 	private sunCycle = new LunarSunCycleSystem();
 	private machinery = new OutpostMachinerySystem();
 	private astronaut = new AstronautController();
+	private npcs = new OutpostNpcSystem();
 	private rover = new OrionRoverSystem();
 	private mission = new MissionGameplaySystem();
 
@@ -40,6 +43,7 @@ export class LunarOutpostScene implements GameScene, CameraController {
 	private lastMouseY = 0;
 	private roverHeadYaw = 0;
 	private isLoaded = false;
+	private isDustAlertActive = false;
 
 	init() {
 		this.scene.background = new THREE.Color(0x03060f);
@@ -47,10 +51,13 @@ export class LunarOutpostScene implements GameScene, CameraController {
 		this.buildStarfield();
 		this.buildSuitHeadlamp();
 
-		this.world.load(this.scene).then(() => {
+		this.world.load(this.scene).then(async () => {
+			characterModelLoader.registerOutpostScene(this.world.outpostRoot);
+
 			this.sunCycle.init(this.scene, this.world.lampPositions);
 			this.machinery.init(this.world);
-			this.astronaut.init(this.scene, 11.5, -24.0, this.world);
+			await this.astronaut.init(this.scene, 11.5, -24.0, this.world);
+			await this.npcs.init(this.scene, this.world);
 			this.rover.init(this.world);
 
 			if (this.world.outpostRoot) {
@@ -69,7 +76,6 @@ export class LunarOutpostScene implements GameScene, CameraController {
 			cam.updateProjectionMatrix();
 		}
 
-		// Boost renderer tone-mapping exposure for bright lunar regolith & crisp shadows
 		const renderer = (sceneManager as unknown as { renderer?: THREE.WebGLRenderer }).renderer;
 		if (renderer) {
 			renderer.shadowMap.enabled = true;
@@ -108,11 +114,20 @@ export class LunarOutpostScene implements GameScene, CameraController {
 
 		sceneManager.setCameraController(playerController);
 		this.keys.clear();
+		this.isDustAlertActive = false;
 		lunarOutpostStore.reset();
 	}
 
 	public dismissDiscoveryCard() {
 		this.mission.dismissDiscoveryCard();
+	}
+
+	public selectNpcDialogueChoice(choiceId: string) {
+		this.npcs.selectChoice(choiceId);
+	}
+
+	public closeNpcDialogue() {
+		this.npcs.closeDialogue();
 	}
 
 	private buildSuitHeadlamp() {
@@ -156,6 +171,7 @@ export class LunarOutpostScene implements GameScene, CameraController {
 
 		if (
 			!this.isPointerLocked &&
+			!this.npcs.isTalking &&
 			!this.mission.activeDiscoveryCard &&
 			this.mission.phase !== 'launched'
 		) {
@@ -165,6 +181,7 @@ export class LunarOutpostScene implements GameScene, CameraController {
 
 	private handleMouseMove = (e: MouseEvent) => {
 		if (!this.isPointerLocked && !this.isDragging) return;
+		if (this.npcs.isTalking) return;
 
 		const dx = this.isPointerLocked ? e.movementX : e.clientX - this.lastMouseX;
 		const dy = this.isPointerLocked ? e.movementY : e.clientY - this.lastMouseY;
@@ -200,6 +217,26 @@ export class LunarOutpostScene implements GameScene, CameraController {
 
 		this.keys.add(e.code);
 		if (!this.isLoaded) return;
+
+		if (this.npcs.isTalking) {
+			if (e.code === 'Digit1') this.npcs.selectChoiceByIndex(0);
+			else if (e.code === 'Digit2') this.npcs.selectChoiceByIndex(1);
+			else if (e.code === 'Digit3') this.npcs.selectChoiceByIndex(2);
+			else if (e.code === 'Digit4') this.npcs.selectChoiceByIndex(3);
+			else if (e.code === 'Escape' || e.code === 'KeyT') this.npcs.closeDialogue();
+			return;
+		}
+
+		if (e.code === 'KeyT') {
+			const opened = this.npcs.tryStartOrAdvanceDialogue(
+				this.mission.phase,
+				this.isDustAlertActive
+			);
+			if (opened && document.pointerLockElement) {
+				document.exitPointerLock();
+			}
+			return;
+		}
 
 		if (e.code === 'KeyE') {
 			if (this.rover.isSeated) {
@@ -254,7 +291,6 @@ export class LunarOutpostScene implements GameScene, CameraController {
 			this.astronaut.applyFirstPersonCamera(camera);
 		}
 
-		// Sync EVA suit visor headlamp with active first-person view
 		const dir = new THREE.Vector3();
 		camera.getWorldDirection(dir);
 		this.suitHeadlamp.position.copy(camera.position);
@@ -276,9 +312,11 @@ export class LunarOutpostScene implements GameScene, CameraController {
 		const solarState = this.sunCycle.update(delta, focusPos);
 		this.machinery.update(delta);
 
-		if (!this.rover.isSeated) {
+		if (!this.rover.isSeated && !this.npcs.isTalking) {
 			this.astronaut.updateOnFoot(delta, this.keys, this.world, this.collisions, this.rover.rover);
+			this.npcs.resolvePlayerCollisions(this.astronaut.root.position);
 		}
+
 		const roverState = this.rover.update(
 			delta,
 			this.keys,
@@ -298,7 +336,22 @@ export class LunarOutpostScene implements GameScene, CameraController {
 			solarState,
 			this.isPointerLocked
 		);
-		lunarOutpostStore.update(hudSnapshot);
+
+		this.isDustAlertActive = hudSnapshot.maintenanceAlert.active;
+
+		const npcComms = this.npcs.update(
+			delta,
+			this.astronaut.root.position,
+			this.rover.isSeated,
+			hudSnapshot.phase,
+			hudSnapshot.maintenanceAlert.active
+		);
+
+		lunarOutpostStore.update({
+			...hudSnapshot,
+			actionPrompt: npcComms.talkPrompt ?? hudSnapshot.actionPrompt,
+			npcComms
+		});
 	}
 }
 

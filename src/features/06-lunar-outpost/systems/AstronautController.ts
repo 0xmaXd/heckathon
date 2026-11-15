@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { LunarOutpostConfig } from '../lunar-outpost.config';
+import { characterModelLoader } from './CharacterModelLoader';
 import type { OutpostCollisionSystem } from './OutpostCollisionSystem';
 import type { OutpostWorldBuilder } from './OutpostWorldBuilder';
 
@@ -12,83 +13,19 @@ export class AstronautController {
 	private velocityY = 0;
 	private isGrounded = true;
 	private walkCycle = 0;
-	private headGroup!: THREE.Group;
-	private leftLeg!: THREE.Mesh;
-	private rightLeg!: THREE.Mesh;
-	private leftArm!: THREE.Mesh;
-	private rightArm!: THREE.Mesh;
+	private suitVisual: THREE.Group | null = null;
 
-	init(scene: THREE.Scene, spawnX: number, spawnZ: number, world: OutpostWorldBuilder) {
-		this.buildAstronautMesh();
+	async init(scene: THREE.Scene, spawnX: number, spawnZ: number, world: OutpostWorldBuilder) {
+		this.suitVisual = await characterModelLoader.createEvaSuitInstance({
+			accentHex: 0xe6480d, // Artemis Orange-Red stripe for Player
+			hideVisorForFirstPerson: true
+		});
+		this.root.add(this.suitVisual);
+
 		const hit = world.sampleSurfaceAt(spawnX, spawnZ);
 		this.root.position.set(spawnX, hit.y, spawnZ);
 		this.root.name = 'EVA_Astronaut_Player';
 		scene.add(this.root);
-	}
-
-	private buildAstronautMesh() {
-		const suitMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.42 });
-		const trimMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.58 });
-		const dcmMat = new THREE.MeshStandardMaterial({
-			color: 0xd97706,
-			metalness: 0.65,
-			roughness: 0.3
-		});
-		const visorMat = new THREE.MeshStandardMaterial({
-			color: 0xf59e0b,
-			metalness: 0.92,
-			roughness: 0.12
-		});
-
-		const torso = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.66, 0.3), suitMat);
-		torso.position.set(0, 1.12, -0.02);
-		torso.castShadow = true;
-		this.root.add(torso);
-
-		const chestDcm = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.22, 0.12), dcmMat);
-		chestDcm.position.set(0, 1.24, 0.17);
-		this.root.add(chestDcm);
-
-		const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.58, 0.24), suitMat);
-		backpack.position.set(0, 1.16, -0.26);
-		backpack.castShadow = true;
-		this.root.add(backpack);
-
-		this.headGroup = new THREE.Group();
-		this.headGroup.position.set(0, 1.66, -0.08);
-		const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 16), suitMat);
-		helmet.castShadow = true;
-		this.headGroup.add(helmet);
-
-		const visor = new THREE.Mesh(
-			new THREE.SphereGeometry(0.18, 14, 12, 0, Math.PI, 0.25, Math.PI * 0.55),
-			visorMat
-		);
-		visor.position.z = 0.03;
-		this.headGroup.add(visor);
-		this.root.add(this.headGroup);
-
-		const legGeo = new THREE.BoxGeometry(0.17, 0.72, 0.2);
-		this.leftLeg = new THREE.Mesh(legGeo, trimMat);
-		this.leftLeg.position.set(-0.14, 0.38, 0.02);
-		this.leftLeg.castShadow = true;
-		this.root.add(this.leftLeg);
-
-		this.rightLeg = new THREE.Mesh(legGeo, trimMat);
-		this.rightLeg.position.set(0.14, 0.38, 0.02);
-		this.rightLeg.castShadow = true;
-		this.root.add(this.rightLeg);
-
-		const armGeo = new THREE.BoxGeometry(0.14, 0.56, 0.15);
-		this.leftArm = new THREE.Mesh(armGeo, suitMat);
-		this.leftArm.position.set(-0.34, 1.12, 0.05);
-		this.leftArm.castShadow = true;
-		this.root.add(this.leftArm);
-
-		this.rightArm = new THREE.Mesh(armGeo, suitMat);
-		this.rightArm.position.set(0.34, 1.12, 0.05);
-		this.rightArm.castShadow = true;
-		this.root.add(this.rightArm);
 	}
 
 	pickUpOrDropCrate(
@@ -151,7 +88,6 @@ export class AstronautController {
 		let strafeInput = 0;
 		if (keys.has('KeyW') || keys.has('ArrowUp')) forwardInput += 1;
 		if (keys.has('KeyS') || keys.has('ArrowDown')) forwardInput -= 1;
-		// Fixed: KeyA = Left (-1), KeyD = Right (+1) along right-hand vector
 		if (keys.has('KeyA') || keys.has('ArrowLeft')) strafeInput -= 1;
 		if (keys.has('KeyD') || keys.has('ArrowRight')) strafeInput += 1;
 
@@ -181,7 +117,6 @@ export class AstronautController {
 			this.walkCycle = 0;
 		}
 
-		// Resolve solid obstacle collisions (buildings, domes, tanks, panels, crates, rover)
 		collisions.resolveHorizontal(this.root.position, 0.44, 1.8, {
 			roverObj,
 			includeRover: true,
@@ -203,16 +138,16 @@ export class AstronautController {
 			this.isGrounded = true;
 		}
 
-		const swing = isMoving && this.isGrounded ? Math.sin(this.walkCycle) * 0.55 : 0;
-		this.leftLeg.rotation.x = swing;
-		this.rightLeg.rotation.x = -swing;
-		this.leftArm.rotation.x = this.carryingCrate ? -0.95 : -0.25 - swing * 0.55;
-		this.rightArm.rotation.x = this.carryingCrate ? -0.95 : -0.25 + swing * 0.55;
+		if (this.suitVisual) {
+			this.suitVisual.position.y =
+				isMoving && this.isGrounded ? Math.abs(Math.sin(this.walkCycle)) * 0.035 : 0;
+		}
 	}
 
 	applyFirstPersonCamera(camera: THREE.PerspectiveCamera) {
 		const bobY = Math.abs(Math.sin(this.walkCycle)) * 0.04;
-		const eyeOffset = new THREE.Vector3(0, 1.66 + bobY, 0.16).applyAxisAngle(
+		// Positioned at z = 0.25 (just forward of the EVA helmet outer shell) so nothing clips first-person view
+		const eyeOffset = new THREE.Vector3(0, 1.66 + bobY, 0.25).applyAxisAngle(
 			new THREE.Vector3(0, 1, 0),
 			this.yawRad
 		);

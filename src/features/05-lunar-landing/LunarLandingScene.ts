@@ -27,6 +27,8 @@ export interface LunarLandingHandoffPayload {
 	siteName: string;
 	style: LandingStyleId;
 	fuelRemainingPct: number;
+	propellantRemainingKg: number;
+	deltaVRemainingMs: number;
 	touchdownTiltDeg: number;
 	padOffsetX: number;
 	padOffsetZ: number;
@@ -35,6 +37,8 @@ export interface LunarLandingHandoffPayload {
 
 export const LUNAR_LANDING_HANDOFF_KEY = 'artemis_lunar_landing_handoff';
 const TOUCHDOWN_TRANSITION_DELAY_MS = 2000;
+// Time-compression factor for terminal descent burn so real mass flow m_dot = F/(Isp*g0) reflects full PDI-to-TD burn
+const DESCENT_BURN_TIME_SCALE = 18;
 
 const HANDLED_KEYS = new Set([
 	'KeyI',
@@ -136,7 +140,6 @@ export class LunarLandingScene implements GameScene {
 			return;
 		}
 
-		// Fade screen at 1.3s and switch to Room 06 (06-lunar-outpost) at 2.0s after touching Orion_Landing_Pad_NASALogo
 		this.blackoutTimer = setTimeout(() => {
 			if (!this.isSceneActive) return;
 			hudStore.triggerBlackout(hudMeta.hud.blackoutMessage);
@@ -152,7 +155,6 @@ export class LunarLandingScene implements GameScene {
 		this.transitionDispatched = true;
 		this.persistLandingHandoff();
 
-		// Sync missionStore directly to Phase 6 (avoid advancePhase() landing on Phase 2 if Phase 5 was jumped to)
 		const store = missionStore as unknown as {
 			phase?: number;
 			currentPhase?: number;
@@ -175,7 +177,6 @@ export class LunarLandingScene implements GameScene {
 			store.currentPhase = 6;
 		}
 
-		// Directly switch SceneManager to Room 06 (06-lunar-outpost)
 		sceneManager.switchScene(6);
 	}
 
@@ -189,7 +190,6 @@ export class LunarLandingScene implements GameScene {
 		const site = this.terrain.getActiveSite();
 		const [padX, padZ] = site.worldOffset;
 
-		// Thin floor collider so top surface sits flush at y = 0.0 (footHeight reaches 0 on touchdown)
 		physicsWorld.addFixedBox([2000, 0.1, 2000], [padX, -0.05, padZ]);
 		for (const h of LunarLandingConfig.hazards) {
 			physicsWorld.addFixedBox(
@@ -240,11 +240,17 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	private persistLandingHandoff() {
+		const massStats = descentGuidance.computeMassStats(
+			lunarLandingState.style,
+			lunarLandingState.fuelPct
+		);
 		const payload: LunarLandingHandoffPayload = {
 			siteIndex: lunarLandingState.siteIndex,
 			siteName: lunarLandingState.siteName,
 			style: lunarLandingState.style,
 			fuelRemainingPct: Math.round(lunarLandingState.fuelPct),
+			propellantRemainingKg: Math.round(massStats.propellantRemainingKg),
+			deltaVRemainingMs: Math.round(massStats.deltaVRemainingMs),
 			touchdownTiltDeg: lunarLandingState.tiltDeg,
 			padOffsetX: Number(this.touchdownOffsetX.toFixed(2)),
 			padOffsetZ: Number(this.touchdownOffsetZ.toFixed(2)),
@@ -271,14 +277,15 @@ export class LunarLandingScene implements GameScene {
 			panelTitle: hudMeta.hud.panelTitle,
 			telemetry: {
 				[labels.site]: lunarLandingState.siteName,
-				[labels.style]: lunarLandingState.style.toUpperCase(),
-				[labels.mode]: lunarLandingState.controlMode === 'auto' ? 'AUTO GNC' : 'MANUAL ASSIST',
+				[labels.style]: profile.label,
+				[labels.mode]:
+					lunarLandingState.controlMode === 'auto' ? 'ORION AUTO GNC' : 'MANUAL ASSIST',
 				[labels.phase]: lunarLandingState.guidancePhase,
-				[labels.altitude]: `${lunarLandingState.altitudeM} m`,
+				[labels.altitude]: `${lunarLandingState.altitudeM.toLocaleString()} m`,
 				[labels.vertVel]: '0.0 m/s',
-				[labels.horizVel]: `${lunarLandingState.horizontalVelMs} m/s`,
+				[labels.horizVel]: `${lunarLandingState.horizontalVelMs.toFixed(1)} m/s`,
 				[labels.tilt]: '0.0°',
-				[labels.fuel]: `${Math.round(lunarLandingState.fuelPct)}%`
+				[labels.fuel]: `${Math.round(massStats.propellantRemainingKg).toLocaleString()} kg (${Math.round(lunarLandingState.fuelPct)}%)`
 			},
 			actions: [
 				{
@@ -299,13 +306,13 @@ export class LunarLandingScene implements GameScene {
 				{
 					id: 'switch-style',
 					label:
-						lunarLandingState.style === 'apollo'
-							? hudMeta.hud.actions.styleArtemis
-							: hudMeta.hud.actions.styleApollo,
+						lunarLandingState.style === 'orion'
+							? hudMeta.hud.actions.styleOrionTrn
+							: hudMeta.hud.actions.styleOrionNominal,
 					disabled: () => lunarLandingState.outcome !== 'descending',
 					onClick: () => {
 						void this.spawnMission(
-							lunarLandingState.style === 'apollo' ? 'artemis' : 'apollo',
+							lunarLandingState.style === 'orion' ? 'orion-trn' : 'orion',
 							lunarLandingState.siteIndex
 						);
 					}
@@ -343,14 +350,16 @@ export class LunarLandingScene implements GameScene {
 		});
 
 		hudStore.setRightPanel({
-			title: 'Spacecraft Telemetry',
+			title: 'Orion Spacecraft Telemetry',
 			subtitle: profile.vehicle,
 			telemetry: {
 				'TOTAL MASS': `${Math.round(massStats.currentMassKg).toLocaleString()} kg`,
 				'DRY MASS': `${profile.dryMassKg.toLocaleString()} kg`,
-				PROPELLANT: `${Math.round(massStats.propellantRemainingKg).toLocaleString()} kg`,
+				PROPELLANT: `${Math.round(massStats.propellantRemainingKg).toLocaleString()} kg (${Math.round(lunarLandingState.fuelPct)}%)`,
+				'DELTA-V REM': `${Math.round(massStats.deltaVRemainingMs).toLocaleString()} m/s`,
 				'MAX THRUST': `${(profile.maxThrustN / 1000).toFixed(1)} kN`,
 				'ACTIVE THRUST': '0.0 kN (0%)',
+				'MASS FLOW': '0.00 kg/s',
 				'LUNAR TWR': `${massStats.lunarTwr.toFixed(2)} gₘ`,
 				'SPECIFIC IMPULSE': `${profile.specificImpulseS} s`,
 				DIMENSIONS: profile.dimensions
@@ -362,7 +371,7 @@ export class LunarLandingScene implements GameScene {
 		this.isSceneActive = true;
 		window.addEventListener('keydown', this.boundKeyDown, { capture: true });
 		window.addEventListener('keyup', this.boundKeyUp, { capture: true });
-		void this.spawnMission('artemis', 0);
+		void this.spawnMission('orion-trn', 0);
 	}
 
 	onExit() {
@@ -435,6 +444,7 @@ export class LunarLandingScene implements GameScene {
 		const vel = this.landerBody.linvel();
 		const site = this.terrain.getActiveSite();
 		const [padX, padZ] = site.worldOffset;
+		const profile = descentGuidance.getProfile(lunarLandingState.style);
 
 		this.terrain.updateAround(pos.x, pos.z);
 		const terrainY = this.terrain.getHeightAt(pos.x, pos.z);
@@ -453,6 +463,7 @@ export class LunarLandingScene implements GameScene {
 		if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) lateralInputX += 1;
 
 		let activeForceX = 0;
+		let livePropellantKg = profile.propellantMassKg * (lunarLandingState.fuelPct / 100);
 
 		if (lunarLandingState.outcome === 'descending') {
 			const guidance = descentGuidance.step({
@@ -491,13 +502,20 @@ export class LunarLandingScene implements GameScene {
 					true
 				);
 				lunarLandingState.throttlePct = Math.round(guidance.throttleRatio * 100);
-				lunarLandingState.fuelPct = Math.max(
-					0,
-					lunarLandingState.fuelPct - (0.3 + guidance.throttleRatio * 1.1) * dt
-				);
+
+				// Real rocket propellant consumption: dm = m_dot * dt_scaled
+				const burnedKg = guidance.massFlowKgs * dt * DESCENT_BURN_TIME_SCALE;
+				const nextPropellantKg = Math.max(0, guidance.propellantRemainingKg - burnedKg);
+				lunarLandingState.fuelPct = (nextPropellantKg / profile.propellantMassKg) * 100;
 			} else {
 				lunarLandingState.throttlePct = 0;
 			}
+
+			const updatedMassStats = descentGuidance.computeMassStats(
+				lunarLandingState.style,
+				lunarLandingState.fuelPct
+			);
+			livePropellantKg = updatedMassStats.propellantRemainingKg;
 
 			this.currentRollRad = THREE.MathUtils.lerp(
 				this.currentRollRad,
@@ -523,17 +541,22 @@ export class LunarLandingScene implements GameScene {
 
 			hudStore.setRightTelemetry(
 				'TOTAL MASS',
-				`${Math.round(guidance.currentMassKg).toLocaleString()} kg`
+				`${Math.round(updatedMassStats.currentMassKg).toLocaleString()} kg`
 			);
 			hudStore.setRightTelemetry(
 				'PROPELLANT',
-				`${Math.round(guidance.propellantRemainingKg).toLocaleString()} kg`
+				`${Math.round(updatedMassStats.propellantRemainingKg).toLocaleString()} kg (${Math.round(lunarLandingState.fuelPct)}%)`
+			);
+			hudStore.setRightTelemetry(
+				'DELTA-V REM',
+				`${Math.round(updatedMassStats.deltaVRemainingMs).toLocaleString()} m/s`
 			);
 			hudStore.setRightTelemetry(
 				'ACTIVE THRUST',
 				`${guidance.activeThrustKn.toFixed(1)} kN (${lunarLandingState.throttlePct}%)`
 			);
-			hudStore.setRightTelemetry('LUNAR TWR', `${guidance.lunarTwr.toFixed(2)} gₘ`);
+			hudStore.setRightTelemetry('MASS FLOW', `${guidance.massFlowKgs.toFixed(2)} kg/s`);
+			hudStore.setRightTelemetry('LUNAR TWR', `${updatedMassStats.lunarTwr.toFixed(2)} gₘ`);
 
 			this.landerVisuals.updateVisuals({
 				x: pos.x,
@@ -564,7 +587,6 @@ export class LunarLandingScene implements GameScene {
 					totalTiltDeg
 				);
 
-				// Seat footpads flush on Orion_Landing_Pad_NASALogo and lock body
 				const flushY = terrainY + LunarLandingConfig.lander.touchdownFootY;
 				this.landerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
 				this.landerBody.setTranslation({ x: pos.x, y: flushY, z: pos.z }, true);
@@ -610,7 +632,6 @@ export class LunarLandingScene implements GameScene {
 		} else {
 			this.landerBody.resetForces(true);
 
-			// Frame-based 2.0s touchdown countdown backup
 			if (lunarLandingState.outcome === 'landed' && this.touchdownElapsedS >= 0) {
 				this.touchdownElapsedS += dt;
 				if (this.touchdownElapsedS >= TOUCHDOWN_TRANSITION_DELAY_MS / 1000) {
@@ -622,31 +643,41 @@ export class LunarLandingScene implements GameScene {
 				lunarLandingState.style,
 				lunarLandingState.fuelPct
 			);
+			livePropellantKg = massStats.propellantRemainingKg;
+
 			hudStore.setRightTelemetry(
 				'TOTAL MASS',
 				`${Math.round(massStats.currentMassKg).toLocaleString()} kg`
 			);
 			hudStore.setRightTelemetry(
 				'PROPELLANT',
-				`${Math.round(massStats.propellantRemainingKg).toLocaleString()} kg`
+				`${Math.round(massStats.propellantRemainingKg).toLocaleString()} kg (${Math.round(lunarLandingState.fuelPct)}%)`
+			);
+			hudStore.setRightTelemetry(
+				'DELTA-V REM',
+				`${Math.round(massStats.deltaVRemainingMs).toLocaleString()} m/s`
 			);
 			hudStore.setRightTelemetry('ACTIVE THRUST', '0.0 kN (0%)');
+			hudStore.setRightTelemetry('MASS FLOW', '0.00 kg/s');
 			hudStore.setRightTelemetry('LUNAR TWR', `${massStats.lunarTwr.toFixed(2)} gₘ`);
 		}
 
 		const labels = hudMeta.hud.telemetryLabels;
 		hudStore.setTelemetry(labels.site, lunarLandingState.siteName);
-		hudStore.setTelemetry(labels.style, lunarLandingState.style.toUpperCase());
+		hudStore.setTelemetry(labels.style, profile.label);
 		hudStore.setTelemetry(
 			labels.mode,
-			lunarLandingState.controlMode === 'auto' ? 'AUTO GNC' : 'MANUAL ASSIST'
+			lunarLandingState.controlMode === 'auto' ? 'ORION AUTO GNC' : 'MANUAL ASSIST'
 		);
 		hudStore.setTelemetry(labels.phase, lunarLandingState.guidancePhase);
-		hudStore.setTelemetry(labels.altitude, `${lunarLandingState.altitudeM} m`);
+		hudStore.setTelemetry(labels.altitude, `${lunarLandingState.altitudeM.toLocaleString()} m`);
 		hudStore.setTelemetry(labels.vertVel, `${lunarLandingState.verticalVelMs.toFixed(1)} m/s`);
 		hudStore.setTelemetry(labels.horizVel, `${lunarLandingState.horizontalVelMs.toFixed(1)} m/s`);
 		hudStore.setTelemetry(labels.tilt, `${lunarLandingState.tiltDeg.toFixed(1)}°`);
-		hudStore.setTelemetry(labels.fuel, `${Math.round(lunarLandingState.fuelPct)}%`);
+		hudStore.setTelemetry(
+			labels.fuel,
+			`${Math.round(livePropellantKg).toLocaleString()} kg (${Math.round(lunarLandingState.fuelPct)}%)`
+		);
 
 		const shakeIntensity =
 			lunarLandingState.isIgnited && lunarLandingState.outcome === 'descending'

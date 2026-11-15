@@ -1,11 +1,11 @@
 {
 	"hud": {
-		"location": "MOON // POWERED DESCENT",
-		"objective": "Monitor GNC descent or toggle Manual Assisted Landing (M) for soft touchdown",
-		"panelTitle": "Descent GNC",
+		"location": "MOON // ORION POWERED DESCENT",
+		"objective": "Monitor Orion GNC descent or toggle Manual Assisted Landing (M) for soft touchdown on the pad",
+		"panelTitle": "Orion Descent GNC",
 		"telemetryLabels": {
 			"site": "TARGET SITE",
-			"style": "PROFILE",
+			"style": "GNC PROFILE",
 			"mode": "CONTROL",
 			"phase": "GUIDANCE",
 			"altitude": "ALTITUDE",
@@ -15,46 +15,46 @@
 			"fuel": "PROPELLANT"
 		},
 		"actions": {
-			"ignite": "Ignite Descent Engine (I)",
+			"ignite": "Ignite Orion Descent Engine (I)",
 			"toggleModeManual": "Switch to Manual Assisted (M)",
-			"toggleModeAuto": "Engage Auto-Land GNC (M)",
-			"styleApollo": "Profile: Apollo PGNCS",
-			"styleArtemis": "Profile: Artemis HLS",
+			"toggleModeAuto": "Engage Orion Auto-Land GNC (M)",
+			"styleOrionNominal": "Profile: Orion Nominal GNC",
+			"styleOrionTrn": "Profile: Orion Precision TRN",
 			"cycleSite": "Next Lunar Landing Site",
 			"retry": "Retry Descent",
 			"proceed": "Deploy to Lunar Surface"
 		},
 		"comms": {
-			"ready": "GNC ONLINE — Orion Auto-Land active, or press [M] for Manual Assisted (W/S/A/D).",
-			"manualEngaged": "MANUAL ASSISTED (P66 DAP): [W/S] Sink Rate • [A/D] Lateral Translate • DAP holds level.",
-			"autoEngaged": "AUTONOMOUS GNC ENGAGED — Computer tracking landing beacon.",
-			"hdaActive": "ALHAT LiDAR SCAN: Boulder hazards marked — diverting to clear touchdown pad.",
-			"landedSuccess": "CONTACT LIGHT — Engine stop. Orion lunar surface touchdown confirmed!",
-			"crashed": "STRUCTURAL LIMIT EXCEEDED — Touchdown velocity or tilt outside safe envelope."
+			"ready": "ORION GNC ONLINE — Autonomous TRN active, or press [M] for Manual Assisted (W/S/A/D).",
+			"manualEngaged": "ORION MANUAL ASSISTED: [W/S] Sink Rate • [A/D] Lateral RCS Translate • DAP holds level.",
+			"autoEngaged": "ORION AUTONOMOUS GNC ENGAGED — Optical TRN tracking Orion Landing Pad.",
+			"hdaActive": "ORION LiDAR / TRN SCAN: Landing zone verified clear — terminal approach locked.",
+			"landedSuccess": "CONTACT LIGHT — Orion engine cutoff. Lunar surface touchdown confirmed!",
+			"crashed": "STRUCTURAL LIMIT EXCEEDED — Touchdown velocity or attitude outside Orion envelope."
 		},
-		"blackoutMessage": "PRESSURIZING AIRLOCK — PREPARING LUNAR EVA..."
+		"blackoutMessage": "PRESSURIZING ORION AIRLOCK — PREPARING LUNAR EVA..."
 	},
 	"inspectables": {
 		"lander": {
 			"nodeName": "Lunar_Descent_Lander",
-			"name": "Orion Lunar Descent Lander",
-			"category": "Crewed Lunar Lander",
-			"description": "Orion Crew & Service Module mated to a deep-throttling lunar descent stage with 4-quad RCS thrusters and Digital Autopilot.",
+			"name": "Orion MPCV Lunar Lander",
+			"category": "NASA Artemis Crew Vehicle",
+			"description": "Orion Crew Module (Lockheed Martin) and European Service Module (Airbus/ESA) mated to a deep-throttling hypergolic lunar descent stage with 36 RCS thrusters and Terrain Relative Navigation.",
 			"specs": {
-				"Gravity": "1.62 m/s² (Moon)",
-				"Autopilot": "3-Axis Rate-Hold DAP",
-				"Legs": "4x Crushable Honeycomb"
+				"Crew Capacity": "4 Astronauts (21-Day)",
+				"Propulsion": "AJ10-190 + Descent Stage",
+				"Propellant": "MON-3 / MMH (8,618 kg)"
 			}
 		},
 		"landingPad": {
 			"nodeName": "Lunar_Landing_Beacon",
-			"name": "Landing Zone Beacon",
-			"category": "Surface Navigation Aid",
-			"description": "Radar transponder and optical hazard-free touchdown zone.",
+			"name": "Orion Lunar Landing Pad",
+			"category": "Artemis Surface Navigation Aid",
+			"description": "Sintered regolith landing pad and optical Terrain Relative Navigation target for Orion.",
 			"specs": {
-				"Safe Vert Vel": "< 2.50 m/s",
-				"Safe Horiz Vel": "< 0.60 m/s",
-				"Slope": "< 1.5 deg"
+				"Safe Sink Rate": "< 2.00 m/s",
+				"Safe Drift": "< 0.50 m/s",
+				"Max Tilt": "< 5.0 deg"
 			}
 		}
 	}

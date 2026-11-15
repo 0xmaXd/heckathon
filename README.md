@@ -53,7 +53,6 @@ npm run build
 
 You can preview the production build with `npm run preview`.
 
-
 core structure:
 Dataset information in data/nasa.
 configuration in config: for game, nasa-datasets, and survival
@@ -62,4 +61,4 @@ rng and state
 
 Orbital control is in the scene manager, of course!
 
-
+There are some bugs, like two suns, and some ray cast issues.

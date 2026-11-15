@@ -46,7 +46,6 @@ export class OutpostWorldBuilder
 	private sunAnchor: THREE.Group | null = null;
 	private sunLight: THREE.DirectionalLight | null = null;
 	private hemiLight: THREE.HemisphereLight | null = null;
-	private earthshineLight: THREE.DirectionalLight | null = null;
 	private lampLights: THREE.PointLight[] = [];
 	private lampBulbMaterials: THREE.MeshStandardMaterial[] = [];
 	private sunAzimuthRad = THREE.MathUtils.degToRad(38);
@@ -246,15 +245,10 @@ export class OutpostWorldBuilder
 		group.add(sunLight.target);
 		this.sunLight = sunLight;
 
-		// 2. Earthshine & Regolith Bounce Fill Light (prevents pitch-black vacuum shadows)
+		// 2. Soft regolith-bounce fill (non-directional, so the sun is the only directional light)
 		const hemiLight = new THREE.HemisphereLight(0xa5c8ff, 0x475569, 1.05);
 		group.add(hemiLight);
 		this.hemiLight = hemiLight;
-
-		const earthshine = new THREE.DirectionalLight(0x7dd3fc, 0.65);
-		earthshine.position.set(-85, 65, 90);
-		group.add(earthshine);
-		this.earthshineLight = earthshine;
 
 		// 3. Visible Sun Sphere + Additive Solar Corona in the Sky
 		const sunAnchor = new THREE.Group();
@@ -332,6 +326,25 @@ export class OutpostWorldBuilder
 		scene.add(group);
 	}
 
+	/**
+	 * Removes every DirectionalLight in the scene except this builder's sun, so there is exactly one
+	 * sun (other systems such as an environment/day-cycle engine may add their own). Returns the
+	 * number of lights removed.
+	 */
+	public enforceSingleSun(scene: THREE.Scene): number {
+		const extras: THREE.DirectionalLight[] = [];
+		scene.traverse((obj) => {
+			const light = obj as THREE.DirectionalLight;
+			if (light.isDirectionalLight && light !== this.sunLight) extras.push(light);
+		});
+		for (const light of extras) {
+			light.parent?.remove(light);
+			light.target?.parent?.remove(light.target);
+			light.dispose?.();
+		}
+		return extras.length;
+	}
+
 	public updateLighting(
 		dt: number,
 		focusPos: THREE.Vector3,
@@ -366,10 +379,6 @@ export class OutpostWorldBuilder
 
 		if (this.hemiLight) {
 			this.hemiLight.intensity = isNight ? 0.65 : 1.1;
-		}
-
-		if (this.earthshineLight) {
-			this.earthshineLight.intensity = isNight ? 0.9 : 0.6;
 		}
 
 		const lampIntensity = isNight ? 30 : 16;

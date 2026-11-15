@@ -54,7 +54,24 @@ export class LunarOutpostScene implements GameScene {
 
 		if (this.world.outpostRoot) {
 			this.collisions.buildFromSceneRoot(this.world.outpostRoot, {
-				excludedKeywords: ['Terrain', 'Ground', 'Floor', 'Rover', 'Sample_', 'Supply_Crate']
+				excludedKeywords: [
+					'Terrain',
+					'Ground',
+					'Floor',
+					'Regolith',
+					'Crater',
+					'Pad',
+					'Trail',
+					'Rut',
+					'Plaza',
+					'Dome',
+					'Roof',
+					'Sky',
+					'Lamp_Head',
+					'Rover',
+					'Sample_',
+					'Supply_Crate'
+				]
 			});
 		}
 
@@ -67,6 +84,12 @@ export class LunarOutpostScene implements GameScene {
 			this.world.findObjectByPatterns([/Orion_Moon_Rover/i, /Orion.*Rover/i, /Rover/i]);
 
 		this.sunCycle.init(this.scene, this.world.lampPositions);
+		const removedLights = this.world.enforceSingleSun(this.scene);
+		if (removedLights > 0) {
+			console.info(
+				`[LunarOutpost] Removed ${removedLights} extra directional light(s); using one sun.`
+			);
+		}
 		this.rover.init(roverObj);
 		this.machinery.init(this.world);
 		await this.npcs.init(this.scene, this.world, () => this.mission.beginResupply());

@@ -66,7 +66,8 @@
 						(pos, out) => sceneManager.projectWorldPoint(pos, out),
 						inspectPanelWidth,
 						inspectPanelHeight,
-						hasScenePanel
+						hasScenePanel,
+						Boolean(hudStore.rightPanel)
 					);
 				}
 			}

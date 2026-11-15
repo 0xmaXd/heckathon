@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -99,7 +100,16 @@ export class SceneManager {
 		return this.fps;
 	}
 
+	/**
+	 * Scene switches call into $state-backed stores (PlayerController, hudStore). If the caller is a
+	 * Svelte $effect, those reads/writes would be tracked and the effect would re-run itself forever
+	 * (effect_update_depth_exceeded). Running the whole switch untracked prevents that.
+	 */
 	switchScene(phase: number): number {
+		return untrack(() => this.switchSceneUntracked(phase));
+	}
+
+	private switchSceneUntracked(phase: number): number {
 		let resolvedPhase = phase;
 
 		if (!this.scenes.has(resolvedPhase)) {

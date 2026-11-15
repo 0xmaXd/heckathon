@@ -112,8 +112,10 @@ class CharacterModelLoader {
 				const mixer = new THREE.AnimationMixer(cloned);
 				const idleClip =
 					gltf.animations.find((a) => /idle|stand|breathe/i.test(a.name)) ?? gltf.animations[0];
-				mixer.clipAction(idleClip).play();
+				const idleAction = mixer.clipAction(idleClip);
+				idleAction.play();
 				container.userData.mixer = mixer;
+				container.userData.idleAction = idleAction;
 			}
 
 			container.add(cloned);

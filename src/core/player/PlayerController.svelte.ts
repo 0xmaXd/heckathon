@@ -93,6 +93,22 @@ export interface PlayerCrateInteractOptions {
 	interactionRadius?: number;
 }
 
+/** How far (metres) the whole character is lowered when seated. Keep in sync with SEATED_HIP_HEIGHT in OrionRoverController. */
+const SEAT_DROP = 0.42;
+
+/** Accepts a THREE.Scene, or a game-scene wrapper exposing `.scene`. */
+function asThreeScene(input: unknown): THREE.Scene {
+	const direct = input as { add?: unknown } | null | undefined;
+	if (direct && typeof direct.add === 'function') return input as THREE.Scene;
+	const wrapped = (input as { scene?: { add?: unknown } } | null | undefined)?.scene;
+	if (wrapped && typeof wrapped.add === 'function') return wrapped as THREE.Scene;
+	const got = input === null ? 'null' : input === undefined ? 'undefined' : typeof input;
+	throw new Error(
+		`[PlayerController] The first argument must be a THREE.Scene (or an object with a .scene), but got ${got}. ` +
+			'Check the playerController.spawn()/init() call in your scene (e.g. LockerRoomScene).'
+	);
+}
+
 const MOVEMENT_CODES = new Set([
 	'KeyW',
 	'KeyA',
@@ -320,7 +336,7 @@ export class PlayerController implements CameraController {
 	}
 
 	async init(
-		scene: THREE.Scene,
+		sceneInput: THREE.Scene,
 		spawnX: number,
 		spawnZ: number,
 		surface: SurfaceProvider = new FlatSurfaceProvider(0),
@@ -329,6 +345,7 @@ export class PlayerController implements CameraController {
 			hideHeadForFirstPerson: true
 		}
 	) {
+		const scene = asThreeScene(sceneInput);
 		const gen = ++this.spawnGeneration;
 		this.root.parent?.remove(this.root);
 		this.root.visible = true;
@@ -424,51 +441,76 @@ export class PlayerController implements CameraController {
 
 	setSeatedPose(seated: boolean) {
 		this.isSeated = seated;
-		if (!this.characterRig) return;
+		const visual = this.characterVisual;
+		const rig = this.characterRig;
 
-		const {
-			pelvis,
-			spine,
-			leftThigh,
-			rightThigh,
-			leftCalf,
-			rightCalf,
-			leftUpperArm,
-			rightUpperArm,
-			leftForearm,
-			rightForearm,
-			restRotations,
-			restPositions
-		} = this.characterRig;
+		if (visual) {
+			// Lower the whole character in world units. Moving a single bone is unreliable:
+			// its local units depend on the rig's scale.
+			visual.position.y = seated ? -SEAT_DROP : 0;
 
-		if (seated) {
-			if (pelvis) {
-				const p = restPositions.get(pelvis);
-				pelvis.position.y = (p?.y ?? 0.84) - 0.34;
-			}
-			if (spine) spine.rotation.x = THREE.MathUtils.degToRad(-10);
-			if (leftThigh) leftThigh.rotation.x = THREE.MathUtils.degToRad(-86);
-			if (rightThigh) rightThigh.rotation.x = THREE.MathUtils.degToRad(-86);
-			if (leftCalf) leftCalf.rotation.x = THREE.MathUtils.degToRad(88);
-			if (rightCalf) rightCalf.rotation.x = THREE.MathUtils.degToRad(88);
-			if (leftUpperArm) {
-				leftUpperArm.rotation.x = THREE.MathUtils.degToRad(-48);
-				leftUpperArm.rotation.z = THREE.MathUtils.degToRad(14);
-			}
-			if (rightUpperArm) {
-				rightUpperArm.rotation.x = THREE.MathUtils.degToRad(-52);
-				rightUpperArm.rotation.z = THREE.MathUtils.degToRad(-18);
-			}
-			if (leftForearm) leftForearm.rotation.x = THREE.MathUtils.degToRad(-24);
-			if (rightForearm) rightForearm.rotation.x = THREE.MathUtils.degToRad(-28);
-		} else {
-			for (const [joint, rot] of restRotations) {
-				joint.rotation.copy(rot);
-			}
-			for (const [joint, pos] of restPositions) {
-				joint.position.copy(pos);
+			// An idle clip would keep overwriting the pose, so stop it while seated.
+			const mixer = visual.userData?.mixer as THREE.AnimationMixer | undefined;
+			if (mixer) {
+				if (seated) mixer.stopAllAction();
+				else (visual.userData?.idleAction as THREE.AnimationAction | undefined)?.reset().play();
 			}
 		}
+
+		if (!rig) return;
+
+		// Always begin from the rest pose
+		for (const [joint, rot] of rig.restRotations) joint.rotation.copy(rot);
+		for (const [joint, pos] of rig.restPositions) joint.position.copy(pos);
+		if (!seated || !visual) return;
+
+		// Pose limbs by AIMING them in world space instead of writing Euler angles. Euler
+		// angles assume the bones' local axes match the fallback suit, which real rigs
+		// (Mixamo, Blender armatures, T-pose rests, ...) do not.
+		visual.updateWorldMatrix(true, true);
+		const frame = visual.getWorldQuaternion(new THREE.Quaternion()); // character faces +Z
+		const dir = (x: number, y: number, z: number) =>
+			new THREE.Vector3(x, y, z).normalize().applyQuaternion(frame);
+
+		// Thighs forward (parents first), then calves down
+		this.aimBone(rig.leftThigh, rig.leftCalf, dir(0, -0.05, 1));
+		this.aimBone(rig.rightThigh, rig.rightCalf, dir(0, -0.05, 1));
+		this.aimBone(rig.leftCalf, null, dir(0, -1, -0.12));
+		this.aimBone(rig.rightCalf, null, dir(0, -1, -0.12));
+
+		// Upper arms down/forward, forearms forward toward the controls
+		this.aimBone(rig.leftUpperArm, rig.leftForearm, dir(0, -0.85, 0.5));
+		this.aimBone(rig.rightUpperArm, rig.rightForearm, dir(0, -0.85, 0.5));
+		this.aimBone(rig.leftForearm, null, dir(0, -0.25, 1));
+		this.aimBone(rig.rightForearm, null, dir(0, -0.25, 1));
+	}
+
+	/** Rotates `bone` so the line from it to its child points along `targetWorldDir`. */
+	private aimBone(
+		bone: THREE.Object3D | null,
+		explicitChild: THREE.Object3D | null,
+		targetWorldDir: THREE.Vector3
+	) {
+		if (!bone || !bone.parent) return;
+		const child =
+			explicitChild ??
+			bone.children.find((c) => (c as THREE.Bone).isBone) ??
+			bone.children[0] ??
+			null;
+		if (!child) return;
+
+		bone.updateWorldMatrix(true, true);
+		const bonePos = bone.getWorldPosition(new THREE.Vector3());
+		const current = child.getWorldPosition(new THREE.Vector3()).sub(bonePos);
+		if (current.lengthSq() < 1e-10) return;
+		current.normalize();
+
+		const delta = new THREE.Quaternion().setFromUnitVectors(current, targetWorldDir);
+		const parentQ = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+		const boneQ = bone.getWorldQuaternion(new THREE.Quaternion());
+		const newWorld = delta.multiply(boneQ);
+		bone.quaternion.copy(parentQ.invert().multiply(newWorld));
+		bone.updateWorldMatrix(false, true);
 	}
 
 	reset() {

@@ -1,357 +1,384 @@
 import * as THREE from 'three';
-import {
-	sceneManager,
-	type CameraController,
-	type CameraPreset,
-	type GameScene,
-	type SceneFrameFeedback
-} from '../../core/engine/SceneManager';
+import { CollisionWorld } from '../../core/engine/CollisionWorld';
+import { EnvironmentLightingEngine } from '../../core/engine/EnvironmentLightingEngine';
+import { sceneManager, type GameScene } from '../../core/engine/SceneManager';
+import { hudStore } from '../../core/hud/hudStore.svelte';
+import { characterModelLoader } from '../../core/player/CharacterModelLoader';
+import { OrionRoverController } from '../../core/player/OrionRoverController';
 import { playerController } from '../../core/player/PlayerController.svelte';
+import { LunarOutpostConfig } from './lunar-outpost.config';
+import hudCopy from './lunar-outpost.hud.json';
 import { lunarOutpostStore } from './lunarOutpostStore.svelte';
-import { AstronautController } from './systems/AstronautController';
-import { characterModelLoader } from './systems/CharacterModelLoader';
-import { LunarSunCycleSystem } from './systems/LunarSunCycleSystem';
 import { MissionGameplaySystem } from './systems/MissionGameplaySystem';
-import { OrionRoverSystem } from './systems/OrionRoverSystem';
-import { OutpostCollisionSystem } from './systems/OutpostCollisionSystem';
+import { outpostEventBus } from './systems/OutpostEventBus';
 import { OutpostMachinerySystem } from './systems/OutpostMachinerySystem';
 import { OutpostNpcSystem } from './systems/OutpostNpcSystem';
 import { OutpostWorldBuilder } from './systems/OutpostWorldBuilder';
 
-export class LunarOutpostScene implements GameScene, CameraController {
+export class LunarOutpostScene implements GameScene {
 	public readonly scene = new THREE.Scene();
-	public readonly cameraPreset: CameraPreset = {
-		position: [11.5, 3.2, -24.0],
-		target: [11.5, 2.2, -28.0],
-		controlsEnabled: false
-	};
 
 	private world = new OutpostWorldBuilder();
-	private collisions = new OutpostCollisionSystem();
-	private sunCycle = new LunarSunCycleSystem();
-	private machinery = new OutpostMachinerySystem();
-	private astronaut = new AstronautController();
-	private npcs = new OutpostNpcSystem();
-	private rover = new OrionRoverSystem();
+	private collisions = new CollisionWorld();
+	private sunCycle = new EnvironmentLightingEngine();
+	private rover = new OrionRoverController({
+		...LunarOutpostConfig.rover,
+		boardingRadius: LunarOutpostConfig.physics.interactionRadius,
+		deliverRadius: LunarOutpostConfig.physics.crateDeliverRadius
+	});
 	private mission = new MissionGameplaySystem();
+	private machinery = new OutpostMachinerySystem();
+	private npcs = new OutpostNpcSystem();
 
-	private suitHeadlamp!: THREE.SpotLight;
+	private worldBuilt = false;
+	private isReady = false;
+	private isSceneActive = false;
+	private setupGeneration = 0;
+	private landerInitialPos = new THREE.Vector3();
 	private keys = new Set<string>();
-	private isDragging = false;
-	private isPointerLocked = false;
-	private lastMouseX = 0;
-	private lastMouseY = 0;
-	private roverHeadYaw = 0;
-	private isLoaded = false;
-	private isDustAlertActive = false;
+	private boundKeyDown = (e: KeyboardEvent) => this.handleKeyDown(e);
+	private boundKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
 
-	init() {
-		this.scene.background = new THREE.Color(0x03060f);
-		this.scene.fog = new THREE.FogExp2(0x050914, 0.00045);
-		this.buildStarfield();
-		this.buildSuitHeadlamp();
+	init(): void {
+		const gen = ++this.setupGeneration;
+		void this.setupAsync(gen);
+	}
 
-		this.world.load(this.scene).then(async () => {
-			characterModelLoader.registerOutpostScene(this.world.outpostRoot);
+	private async setupAsync(gen: number): Promise<void> {
+		this.isReady = false;
 
-			this.sunCycle.init(this.scene, this.world.lampPositions);
-			this.machinery.init(this.world);
-			await this.astronaut.init(this.scene, 11.5, -24.0, this.world);
-			await this.npcs.init(this.scene, this.world, () => {
-				this.mission.startResupplyMission();
+		await this.world.build(this.scene);
+		if (gen !== this.setupGeneration) return;
+
+		characterModelLoader.registerEmbeddedTemplate(this.world.outpostRoot);
+
+		if (this.world.outpostRoot) {
+			this.collisions.buildFromSceneRoot(this.world.outpostRoot, {
+				excludedKeywords: ['Terrain', 'Ground', 'Floor', 'Rover', 'Sample_', 'Supply_Crate']
 			});
-			this.rover.init(this.world);
+		}
 
-			if (this.world.outpostRoot) {
-				this.collisions.buildFromRoot(this.world.outpostRoot, this.world.supplyCrates, () =>
-					this.machinery.isAirlockOpen()
-				);
-			}
-			this.isLoaded = true;
+		if (this.world.landerAssembly) {
+			this.landerInitialPos.copy(this.world.landerAssembly.position);
+		}
+
+		const roverObj =
+			this.world.outpostRoot?.getObjectByName('Orion_Moon_Rover') ??
+			this.world.findObjectByPatterns([/Orion_Moon_Rover/i, /Orion.*Rover/i, /Rover/i]);
+
+		this.sunCycle.init(this.scene, this.world.lampPositions);
+		this.rover.init(roverObj);
+		this.machinery.init(this.world);
+		await this.npcs.init(this.scene, this.world, () => this.mission.beginResupply());
+		if (gen !== this.setupGeneration) return;
+
+		this.mission.init(this.scene, this.world);
+		this.collisions.registerDynamicProps(this.mission.crates);
+		this.worldBuilt = true;
+
+		if (this.isSceneActive) {
+			await this.attachPlayerToScene(gen);
+		}
+	}
+
+	private async attachPlayerToScene(gen: number): Promise<void> {
+		characterModelLoader.registerEmbeddedTemplate(this.world.outpostRoot);
+
+		playerController.setPhysics({
+			walkSpeed: LunarOutpostConfig.physics.evaWalkSpeed,
+			sprintSpeed: LunarOutpostConfig.physics.evaSprintSpeed,
+			jumpVelocity: LunarOutpostConfig.physics.evaJumpVelocity,
+			gravity: LunarOutpostConfig.physics.lunarGravity
 		});
-	}
+		playerController.yawRad = Math.PI;
+		playerController.pitchRad = 0;
 
-	onEnter() {
-		const cam = sceneManager.getCamera() as THREE.PerspectiveCamera | null;
-		if (cam) {
-			cam.near = 0.1;
-			cam.updateProjectionMatrix();
-		}
+		await playerController.init(this.scene, 11.5, -24.0, this.world, {
+			modelUrl: LunarOutpostConfig.characterModelUrl,
+			accentHex: 0xe6480d,
+			hideHeadForFirstPerson: true
+		});
 
-		const renderer = (sceneManager as unknown as { renderer?: THREE.WebGLRenderer }).renderer;
-		if (renderer) {
-			renderer.shadowMap.enabled = true;
-			renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-			renderer.toneMapping = THREE.ACESFilmicToneMapping;
-			renderer.toneMappingExposure = 1.55;
-		}
+		if (gen !== this.setupGeneration || !this.isSceneActive) return;
 
-		sceneManager.setCameraController(this);
-
-		window.addEventListener('keydown', this.handleKeyDown);
-		window.addEventListener('keyup', this.handleKeyUp);
-		window.addEventListener('mousedown', this.handleMouseDown);
-		window.addEventListener('mousemove', this.handleMouseMove);
-		window.addEventListener('mouseup', this.handleMouseUp);
-		document.addEventListener('pointerlockchange', this.handlePointerLockChange);
-	}
-
-	onExit() {
-		window.removeEventListener('keydown', this.handleKeyDown);
-		window.removeEventListener('keyup', this.handleKeyUp);
-		window.removeEventListener('mousedown', this.handleMouseDown);
-		window.removeEventListener('mousemove', this.handleMouseMove);
-		window.removeEventListener('mouseup', this.handleMouseUp);
-		document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
-
-		if (document.pointerLockElement) {
-			document.exitPointerLock();
-		}
-
-		const renderer = (sceneManager as unknown as { renderer?: THREE.WebGLRenderer }).renderer;
-		if (renderer) {
-			renderer.toneMapping = THREE.NoToneMapping;
-			renderer.toneMappingExposure = 1.0;
-		}
-
+		playerController.activate(null, this.rover);
 		sceneManager.setCameraController(playerController);
+		this.world.updateLighting(0, playerController.root.position, 22, false);
+		this.isReady = true;
+	}
+
+	onEnter(): void {
+		this.isSceneActive = true;
+		window.addEventListener('keydown', this.boundKeyDown);
+		window.addEventListener('keyup', this.boundKeyUp);
+
+		hudStore.configureScene({
+			location: hudCopy.locationLabel,
+			objective: hudCopy.briefing.dialogue,
+			panelTitle: hudCopy.outpostName,
+			telemetry: {
+				'Solar Cycle': 'Lunar Day',
+				'Rover Battery': '100%',
+				'Drop-Offs': `0 / ${LunarOutpostConfig.resupplyRequiredCount}`,
+				'ISRU Samples': '0 / 6'
+			},
+			actions: [
+				{
+					id: 'restart-outpost',
+					label: 'Restart Outpost Mission',
+					onClick: () => this.restartMission()
+				}
+			]
+		});
+
+		if (this.worldBuilt) {
+			const gen = ++this.setupGeneration;
+			void this.attachPlayerToScene(gen);
+		}
+	}
+
+	onExit(): void {
+		this.isSceneActive = false;
+		this.isReady = false;
+		this.setupGeneration++;
+
+		this.rover.reset(playerController.root, this.scene);
+		playerController.deactivate();
+		playerController.root.parent?.remove(playerController.root);
+		characterModelLoader.clearEmbeddedTemplate();
+
+		window.removeEventListener('keydown', this.boundKeyDown);
+		window.removeEventListener('keyup', this.boundKeyUp);
 		this.keys.clear();
-		this.isDustAlertActive = false;
+		hudStore.reset();
 		lunarOutpostStore.reset();
 	}
 
-	public dismissDiscoveryCard() {
-		this.mission.dismissDiscoveryCard();
-	}
-
-	public selectNpcDialogueChoice(choiceId: string) {
-		this.npcs.selectChoice(choiceId);
-	}
-
-	public closeNpcDialogue() {
+	closeNpcDialogue(): void {
 		this.npcs.closeDialogue();
 	}
 
-	private buildSuitHeadlamp() {
-		this.suitHeadlamp = new THREE.SpotLight(0xf0f9ff, 6.5, 58, Math.PI / 3.8, 0.55, 1.0);
-		this.scene.add(this.suitHeadlamp);
-		this.scene.add(this.suitHeadlamp.target);
+	selectNpcDialogueChoice(choiceId: string): void {
+		this.npcs.selectChoice(choiceId);
 	}
 
-	private buildStarfield() {
-		const starCount = 2800;
-		const positions = new Float32Array(starCount * 3);
-		for (let i = 0; i < starCount; i++) {
-			const theta = Math.random() * Math.PI * 2;
-			const phi = Math.acos(Math.random() * 0.96);
-			const r = 740;
-			positions[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
-			positions[i * 3 + 1] = Math.cos(phi) * r + 20;
-			positions[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * r;
-		}
-		const geo = new THREE.BufferGeometry();
-		geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-		this.scene.add(
-			new THREE.Points(
-				geo,
-				new THREE.PointsMaterial({ color: 0xe2e8f0, size: 1.4, sizeAttenuation: false, fog: false })
-			)
-		);
+	dismissDiscoveryCard(): void {
+		this.mission.activeDiscoveryCard = null;
 	}
 
-	private handlePointerLockChange = () => {
-		this.isPointerLocked = document.pointerLockElement?.id === 'game-canvas';
-	};
+	restartMission(): void {
+		this.npcs.reset();
+		this.rover.reset(playerController.root, this.scene);
+		playerController.clearCarriedItem();
+		const spawn = this.world.sampleSurfaceAt(11.5, -24.0);
+		playerController.root.position.set(11.5, spawn.y, -24.0);
+		playerController.yawRad = Math.PI;
+		playerController.pitchRad = 0;
 
-	private handleMouseDown = (e: MouseEvent) => {
-		const target = e.target as HTMLElement | null;
-		if (target?.id !== 'game-canvas') return;
-
-		this.isDragging = true;
-		this.lastMouseX = e.clientX;
-		this.lastMouseY = e.clientY;
-
-		if (
-			!this.isPointerLocked &&
-			!this.npcs.isTalking &&
-			!this.mission.activeDiscoveryCard &&
-			this.mission.phase !== 'launched'
-		) {
-			target.requestPointerLock?.();
+		if (this.world.landerAssembly) {
+			this.world.landerAssembly.position.copy(this.landerInitialPos);
 		}
-	};
+		if (this.world.landerAscentPlume) {
+			this.world.landerAscentPlume.visible = false;
+		}
+		this.machinery.init(this.world);
+		this.mission.resetMission(this.scene, this.world);
+	}
 
-	private handleMouseMove = (e: MouseEvent) => {
-		if (!this.isPointerLocked && !this.isDragging) return;
-		if (this.npcs.isTalking) return;
+	private handleKeyDown(e: KeyboardEvent): void {
+		if (!this.isReady) return;
 
-		const dx = this.isPointerLocked ? e.movementX : e.clientX - this.lastMouseX;
-		const dy = this.isPointerLocked ? e.movementY : e.clientY - this.lastMouseY;
-		this.lastMouseX = e.clientX;
-		this.lastMouseY = e.clientY;
+		const currentTurn = lunarOutpostStore.snapshot?.npcComms?.activeTurn ?? null;
 
-		const sensitivity = 0.0028;
-		if (this.rover.isSeated) {
-			this.roverHeadYaw = THREE.MathUtils.clamp(this.roverHeadYaw - dx * sensitivity, -1.6, 1.6);
-		} else {
-			this.astronaut.yawRad -= dx * sensitivity;
+		if (e.code === 'Escape' && currentTurn) {
+			this.closeNpcDialogue();
+			return;
 		}
 
-		this.astronaut.pitchRad = THREE.MathUtils.clamp(
-			this.astronaut.pitchRad - dy * sensitivity,
-			-1.42,
-			1.42
-		);
-	};
-
-	private handleMouseUp = () => {
-		this.isDragging = false;
-	};
-
-	private handleKeyDown = (e: KeyboardEvent) => {
-		const target = e.target as HTMLElement | null;
-		if (
-			target &&
-			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-		) {
+		if (currentTurn && ['Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(e.code)) {
+			const idx = Number(e.code.replace('Digit', '')) - 1;
+			this.npcs.selectChoiceByIndex(idx);
 			return;
 		}
 
 		this.keys.add(e.code);
-		if (!this.isLoaded) return;
-
-		if (this.npcs.isTalking) {
-			if (e.code === 'Digit1') this.npcs.selectChoiceByIndex(0);
-			else if (e.code === 'Digit2') this.npcs.selectChoiceByIndex(1);
-			else if (e.code === 'Digit3') this.npcs.selectChoiceByIndex(2);
-			else if (e.code === 'Digit4') this.npcs.selectChoiceByIndex(3);
-			else if (e.code === 'Escape' || e.code === 'KeyT') this.npcs.closeDialogue();
-			return;
-		}
 
 		if (e.code === 'KeyT') {
-			const opened = this.npcs.tryStartOrAdvanceDialogue(
+			this.npcs.tryStartOrAdvanceDialogue(
 				this.mission.phase,
-				this.isDustAlertActive
+				this.mission.dustyPanelsRemaining > 0
 			);
-			if (opened && document.pointerLockElement) {
-				document.exitPointerLock();
-			}
-			return;
-		}
-
-		if (e.code === 'KeyE') {
-			if (this.rover.isSeated) {
-				this.rover.toggleEnterExit(this.astronaut.root, this.world);
-				this.astronaut.yawRad = this.rover.rover?.rotation.y ?? this.astronaut.yawRad;
-				this.roverHeadYaw = 0;
-				return;
-			}
-			if (this.rover.isInBoardingRange(this.astronaut.root.position)) {
-				this.rover.toggleEnterExit(this.astronaut.root, this.world);
-				this.roverHeadYaw = 0;
-				return;
-			}
-			const interacted = this.mission.handleContextInteract(
-				this.astronaut.root.position,
-				this.scene,
-				this.world,
-				this.machinery
-			);
-			if (interacted) {
-				if (this.mission.activeDiscoveryCard && document.pointerLockElement) {
-					document.exitPointerLock();
-				}
-				if (this.mission.phase === 'launched') {
-					sceneManager.shake(0.35, 1.4);
-					if (document.pointerLockElement) document.exitPointerLock();
+		} else if (e.code === 'KeyE') {
+			if (this.rover.isSeated || this.rover.isInBoardingRange(playerController.root.position)) {
+				this.rover.toggleEnterExit(playerController.root, this.world, this.scene);
+			} else {
+				const prevPhase = this.mission.phase;
+				const msg = this.mission.tryContextInteract(playerController.root.position);
+				if (msg) {
+					hudStore.setComms(msg);
+					if (prevPhase !== 'launched' && this.mission.phase === 'launched') {
+						this.machinery.triggerLanderLaunch();
+						outpostEventBus.emit('lander:launched', { launchPadPos: [46, 0, -52] });
+					}
+				} else if (this.machinery.isNearAirlock(playerController.root.position)) {
+					this.machinery.toggleAirlockDoor();
+					hudStore.setComms(
+						this.machinery.isAirlockOpen() ? 'Habitat Airlock opened.' : 'Habitat Airlock sealed.'
+					);
 				}
 			}
 		} else if (e.code === 'KeyF') {
 			if (this.rover.isSeated) {
-				this.rover.loadOrUnloadCrate(this.world.supplyCrates, this.scene, this.world);
+				const msg = this.rover.loadOrUnloadCrate(
+					this.mission.crates,
+					this.scene,
+					this.world,
+					this.mission
+				);
+				if (msg) hudStore.setComms(msg);
 			} else {
-				this.astronaut.pickUpOrDropCrate(this.world.supplyCrates, this.scene, this.world);
+				const msg = playerController.pickUpOrDropCrate(
+					this.mission.crates,
+					this.scene,
+					this.world,
+					{
+						vehicle: this.rover,
+						zoneProvider: this.mission,
+						deliverRadius: LunarOutpostConfig.physics.crateDeliverRadius,
+						interactionRadius: LunarOutpostConfig.physics.interactionRadius
+					}
+				);
+				if (msg) hudStore.setComms(msg);
 			}
 		} else if (e.code === 'KeyL' && this.rover.isSeated) {
 			this.rover.toggleHeadlights();
-		} else if (e.code === 'Escape') {
-			this.mission.dismissDiscoveryCard();
 		}
-	};
-
-	private handleKeyUp = (e: KeyboardEvent) => {
-		this.keys.delete(e.code);
-	};
-
-	updateCamera(_delta: number, camera: THREE.PerspectiveCamera): boolean {
-		if (!this.isLoaded) return false;
-
-		if (this.rover.isSeated) {
-			this.rover.applyFirstPersonDriverCamera(camera, this.roverHeadYaw, this.astronaut.pitchRad);
-		} else {
-			this.astronaut.applyFirstPersonCamera(camera);
-		}
-
-		const dir = new THREE.Vector3();
-		camera.getWorldDirection(dir);
-		this.suitHeadlamp.position.copy(camera.position);
-		this.suitHeadlamp.target.position.copy(camera.position).addScaledVector(dir, 14);
-		this.suitHeadlamp.target.updateMatrixWorld();
-		this.suitHeadlamp.visible = !this.rover.isSeated;
-
-		return true;
 	}
 
-	update(delta: number): SceneFrameFeedback | void {
-		if (!this.isLoaded) return;
+	update(delta: number): void {
+		if (!this.isReady) return;
 
-		const focusPos =
-			this.rover.isSeated && this.rover.rover
-				? this.rover.rover.position
-				: this.astronaut.root.position;
-
-		const solarState = this.sunCycle.update(delta, focusPos);
-		this.machinery.update(delta);
-
-		if (!this.rover.isSeated && !this.npcs.isTalking) {
-			this.astronaut.updateOnFoot(delta, this.keys, this.world, this.collisions, this.rover.rover);
-			this.npcs.resolvePlayerCollisions(this.astronaut.root.position);
-		}
+		const sun = this.sunCycle.update(delta, playerController.root.position);
+		this.world.updateLighting(
+			delta,
+			playerController.root.position,
+			sun.sunElevationDeg,
+			sun.isNight ?? false
+		);
 
 		const roverState = this.rover.update(
 			delta,
 			this.keys,
-			this.astronaut.root,
+			playerController.root,
 			this.world,
 			this.collisions
 		);
+		playerController.update(delta, this.keys, this.world, this.collisions, this.rover.rover);
+		if (!roverState.isSeated) {
+			this.npcs.resolvePlayerCollisions(playerController.root.position);
+		}
+		this.machinery.update(delta);
 
-		const hudSnapshot = this.mission.update(
+		const missionPrompt = this.mission.update(
 			delta,
-			this.scene,
-			this.world,
-			this.astronaut,
-			this.rover,
-			this.machinery,
-			roverState,
-			solarState,
-			this.isPointerLocked
+			playerController.root.position,
+			this.rover.rover,
+			{
+				isSeated: roverState.isSeated,
+				carryingCrateName: playerController.carryingItemName,
+				roverLoadedCrateName: roverState.loadedCrateName
+			}
 		);
 
-		this.isDustAlertActive = hudSnapshot.maintenanceAlert.active;
-
+		const dustAlertActive = this.mission.dustyPanelsRemaining > 0;
 		const npcComms = this.npcs.update(
 			delta,
-			this.astronaut.root.position,
-			this.rover.isSeated,
-			hudSnapshot.phase,
-			hudSnapshot.maintenanceAlert.active
+			playerController.root.position,
+			roverState.isSeated,
+			this.mission.phase,
+			dustAlertActive
 		);
 
+		const deliveredCount = this.mission.dropOffZones.filter((z) => z.delivered).length;
+		const collectedCount = this.mission.samples.filter((s) => s.collected).length;
+		const analyzedCount = this.mission.samples.filter((s) => s.analyzed).length;
+
+		hudStore.setTelemetry('Solar Cycle', `${sun.phaseLabel} (${sun.sunElevationDeg}°)`);
+		hudStore.setTelemetry('Rover Battery', `${roverState.batteryPct}%`);
+		hudStore.setTelemetry(
+			'Drop-Offs',
+			`${deliveredCount} / ${LunarOutpostConfig.resupplyRequiredCount}`
+		);
+		hudStore.setTelemetry('ISRU Samples', `${analyzedCount} / 6`);
+
+		let actionPrompt: string | null = null;
+		if (roverState.isSeated) {
+			if (missionPrompt) {
+				hudStore.setPrompt(missionPrompt.key, missionPrompt.label);
+				actionPrompt = `[${missionPrompt.key}] ${missionPrompt.label}`;
+			} else {
+				hudStore.setPrompt('E', 'Exit Orion LTV Rover');
+				actionPrompt = '[E] Exit Orion LTV Rover';
+			}
+		} else if (missionPrompt) {
+			hudStore.setPrompt(missionPrompt.key, missionPrompt.label);
+			actionPrompt = `[${missionPrompt.key}] ${missionPrompt.label}`;
+		} else if (roverState.canBoard) {
+			hudStore.setPrompt('E', 'Board Orion LTV Rover');
+			actionPrompt = '[E] Board Orion LTV Rover';
+		} else if (npcComms.talkPrompt && npcComms.nearbyNpcName) {
+			hudStore.setPrompt('T', `Talk to ${npcComms.nearbyNpcName}`);
+			actionPrompt = npcComms.talkPrompt;
+		} else {
+			hudStore.clearPrompt();
+		}
+
+		const commsHeader =
+			this.mission.phase === 'launched' || this.mission.phase === 'finale_ready'
+				? hudCopy.finaleReady
+				: this.mission.phase === 'exploration'
+					? hudCopy.explorationStart
+					: hudCopy.briefing;
+
 		lunarOutpostStore.update({
-			...hudSnapshot,
-			actionPrompt: npcComms.talkPrompt ?? hudSnapshot.actionPrompt,
+			phase: this.mission.phase,
+			speaker: commsHeader.speaker as 'Commander Maya' | 'Geologist Leo' | 'Mission Control',
+			dialogue: commsHeader.dialogue,
+			actionPrompt,
+			cratesDelivered: deliveredCount,
+			cratesRequired: LunarOutpostConfig.resupplyRequiredCount,
+			dropOffZones: this.mission.dropOffZones.map((z) => ({
+				id: z.id,
+				label: z.label,
+				shortHint: z.shortHint,
+				delivered: z.delivered,
+				deliveredCrateName: z.deliveredCrateName
+			})),
+			carryingCrateName: playerController.carryingItemName,
+			samplesCollectedCount: collectedCount,
+			samplesAnalyzedCount: analyzedCount,
+			samples: this.mission.samples,
+			activeDiscoveryCard: this.mission.activeDiscoveryCard,
+			maintenanceAlert: {
+				active: dustAlertActive,
+				title: hudCopy.maintenanceAlert.title,
+				message: hudCopy.maintenanceAlert.message,
+				dustyPanelsRemaining: this.mission.dustyPanelsRemaining,
+				totalPanels: this.world.solarDustLayers.length
+			},
+			rover: {
+				...roverState,
+				surfaceType: roverState.surfaceType as typeof roverState.surfaceType &
+					('Sintered_Regolith' | 'Compacted_Wheel_Ruts' | 'Graded_Crater_Trail' | 'Loose_Regolith')
+			},
+			solar: {
+				phaseLabel: sun.phaseLabel as 'Lunar Day' | 'Crater Twilight' | 'Lunar Night',
+				sunElevationDeg: sun.sunElevationDeg,
+				cycleProgressPct: sun.cycleProgressPct ?? 0,
+				isNight: sun.isNight ?? false
+			},
+			scannerPowerPct: this.mission.scannerPowerPct,
+			isPointerLocked: playerController.isPointerLocked,
 			npcComms
 		});
 	}

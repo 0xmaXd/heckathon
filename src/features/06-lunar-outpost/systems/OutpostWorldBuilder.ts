@@ -1,559 +1,566 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import type { SurfaceHit, SurfaceProvider } from '../../../core/engine/CollisionWorld';
 import { LunarOutpostConfig } from '../lunar-outpost.config';
-import type { DropOffZoneId, SurfaceType } from '../lunar-outpost.types';
-import type { AstronautController } from './AstronautController';
-import type { OrionRoverSystem } from './OrionRoverSystem';
+import type { SurfaceType } from '../lunar-outpost.types';
+import type { OutpostMachineryNodes } from './OutpostMachinerySystem';
+import type { NpcWorldEnvironment } from './OutpostNpcSystem';
 
-export interface SurfaceHit {
-	y: number;
-	normal: THREE.Vector3;
-	surfaceType: SurfaceType;
-}
-
-export interface WorldDropOffZone {
-	id: DropOffZoneId;
-	label: string;
-	shortHint: string;
-	position: THREE.Vector3;
-	delivered: boolean;
-	deliveredCrateName: string | null;
-	ringMesh: THREE.Mesh;
+export interface WorldDropOffZoneEntry {
 	beaconMesh: THREE.Mesh;
-}
-
-export interface SkywardWaypointTarget {
-	id: string;
+	delivered: boolean;
 	position: THREE.Vector3;
-	intensity?: number;
-	radiusScale?: number;
 }
 
-interface SkywardBeaconVisual {
-	group: THREE.Group;
-	coreMesh: THREE.Mesh;
-	haloMesh: THREE.Mesh;
-	baseRingMesh: THREE.Mesh;
-	coreMat: THREE.MeshBasicMaterial;
-	haloMat: THREE.MeshBasicMaterial;
-	ringMat: THREE.MeshBasicMaterial;
-	phaseOffset: number;
-}
-
-const PAD_OR_GROUND_PATTERN =
-	/(_Pad|_Apron|_Anchor|_Ring|_HazardRing|_Decal|_Logo|_Disc|_Walkway|_Foundation|Terrain|Beacon|Light)/i;
-const LANDER_NAME_PATTERN = /(lander|sample[_\s-]*return|ascent|descent[_\s-]*stage|capsule)/i;
-
-// Faint luminous yellow skyward beam palette
-const SKY_BEACON_CORE_HEX = 0xfef08a; // Soft pale yellow core
-const SKY_BEACON_HALO_HEX = 0xfacc15; // Warm solar yellow outer halo
-
-export class OutpostWorldBuilder {
-	public outpostRoot: THREE.Object3D | null = null;
-	public roverObject: THREE.Object3D | null = null;
-	public roverSystem: OrionRoverSystem | null = null;
-	public astronautController: AstronautController | null = null;
-	public workstationObject: THREE.Object3D | null = null;
-	public storagePodObject: THREE.Object3D | null = null;
-	public landingPadAnchor: THREE.Object3D | null = null;
-	public landerAssembly: THREE.Group | null = null;
-	public landerAscentPlume: THREE.Mesh | null = null;
-	public airlockDoor: THREE.Object3D | null = null;
-	public iceDrillAuger: THREE.Object3D | null = null;
-
-	public commDishes: THREE.Object3D[] = [];
-	public supplyCrates: THREE.Object3D[] = [];
-	public sampleNodes = new Map<string, THREE.Object3D>();
-	public sampleBeacons = new Map<string, THREE.Mesh>();
-	public solarDustLayers: THREE.Object3D[] = [];
+export class OutpostWorldBuilder
+	implements SurfaceProvider, OutpostMachineryNodes, NpcWorldEnvironment
+{
+	public outpostRoot: THREE.Group | null = null;
 	public lampPositions: THREE.Vector3[] = [];
-	public dropOffZones: WorldDropOffZone[] = [];
 
-	public resupplyDropPos = new THREE.Vector3(-22, 0, 14);
+	// NpcWorldEnvironment anchors
 	public workstationPos = new THREE.Vector3(6.5, 0, -1.5);
 	public launchPadPos = new THREE.Vector3(46, 0, -52);
+	public resupplyDropPos = new THREE.Vector3(11.5, 0, -29.5);
+	public sampleNodes = new Map<string, THREE.Object3D>();
 
-	private landmarkMatches = new Map<DropOffZoneId, THREE.Object3D>();
+	// OutpostMachineryNodes & NpcWorldEnvironment shared zones
+	public airlockDoor: THREE.Object3D | null = null;
+	public iceDrillAuger: THREE.Object3D | null = null;
+	public commDishes: THREE.Object3D[] = [];
+	public solarDustLayers: THREE.Object3D[] = [];
+	public sampleBeacons = new Map<string, THREE.Mesh>();
+	public dropOffZones: WorldDropOffZoneEntry[] = [];
+	public landerAssembly: THREE.Group | null = null;
+	public landerAscentPlume: THREE.Mesh | null = null;
+
+	private loader = new GLTFLoader();
+	private terrainMeshes: THREE.Mesh[] = [];
 	private raycaster = new THREE.Raycaster();
-	private downDir = new THREE.Vector3(0, -1, 0);
 	private rayOrigin = new THREE.Vector3();
-	private groundMeshes: THREE.Object3D[] = [];
+	private downDir = new THREE.Vector3(0, -1, 0);
+	private defaultUp = new THREE.Vector3(0, 1, 0);
 
-	private skyBeamTexture: THREE.CanvasTexture | null = null;
-	private skyBeaconPool: SkywardBeaconVisual[] = [];
-	private skyBeaconContainer = new THREE.Group();
-	private labAnalysisRing: THREE.Mesh | null = null;
+	// Lighting & Visible Sun Rig
+	private lightingGroup: THREE.Group | null = null;
+	private sunAnchor: THREE.Group | null = null;
+	private sunLight: THREE.DirectionalLight | null = null;
+	private hemiLight: THREE.HemisphereLight | null = null;
+	private earthshineLight: THREE.DirectionalLight | null = null;
+	private lampLights: THREE.PointLight[] = [];
+	private lampBulbMaterials: THREE.MeshStandardMaterial[] = [];
+	private sunAzimuthRad = THREE.MathUtils.degToRad(38);
 
-	async load(scene: THREE.Scene): Promise<void> {
-		const loader = new GLTFLoader();
-		const gltf = await loader.loadAsync(LunarOutpostConfig.modelUrl);
+	async build(scene: THREE.Scene): Promise<void> {
+		this.terrainMeshes = [];
+		this.lampPositions = [];
+		this.lampLights = [];
+		this.lampBulbMaterials = [];
+		this.airlockDoor = null;
+		this.iceDrillAuger = null;
+		this.commDishes = [];
+		this.solarDustLayers = [];
+		this.sampleNodes.clear();
+		this.sampleBeacons.clear();
+		this.dropOffZones.length = 0;
+		this.landerAssembly = null;
+		this.landerAscentPlume = null;
 
-		this.outpostRoot = gltf.scene;
-		scene.add(this.outpostRoot);
-		this.outpostRoot.updateMatrixWorld(true);
+		this.workstationPos.set(6.5, 0, -1.5);
+		this.launchPadPos.set(46, 0, -52);
+		this.resupplyDropPos.set(11.5, 0, -29.5);
 
-		this.skyBeamTexture = this.createSkywardBeamTexture();
-		this.skyBeaconContainer.name = 'Skyward_Mission_Beacons';
-		scene.add(this.skyBeaconContainer);
+		scene.background = new THREE.Color(0x02040a);
+		scene.fog = new THREE.FogExp2(0x03060f, 0.0014);
+		scene.environment = this.createLunarEnvironmentTexture();
+		scene.environmentIntensity = 0.72;
 
-		this.indexSceneNodes(this.outpostRoot);
-		this.assembleLanderOnPad();
-		this.buildDropOffZones(scene);
-		this.buildZoneRings(scene);
-		this.buildSampleBeacons(scene);
+		const root = new THREE.Group();
+		root.name = 'Orion_Lunar_Outpost_Root';
+
+		try {
+			const gltf = await this.loader.loadAsync(LunarOutpostConfig.modelUrl);
+			root.add(gltf.scene);
+		} catch (err) {
+			console.warn(
+				`[OutpostWorldBuilder] Failed to load ${LunarOutpostConfig.modelUrl}, using fallback lunar pad.`,
+				err
+			);
+			root.add(this.createFallbackOutpost());
+		}
+
+		let foundAirlock: THREE.Object3D | null = null;
+		let foundDrill: THREE.Object3D | null = null;
+		const landerMatches: THREE.Object3D[] = [];
+		const lampHeadNodes: THREE.Object3D[] = [];
+
+		root.updateMatrixWorld(true);
+		root.traverse((obj) => {
+			if (obj instanceof THREE.Mesh) {
+				obj.castShadow = true;
+				obj.receiveShadow = true;
+				if (/(terrain|ground|regolith|crater|pad|floor|trail|rut)/i.test(obj.name)) {
+					this.terrainMeshes.push(obj);
+				}
+			}
+
+			if (/Outpost_Lamp_Head/i.test(obj.name)) {
+				lampHeadNodes.push(obj);
+			} else if (
+				lampHeadNodes.length === 0 &&
+				/(lamp_head|light_post|beacon|mast_light)/i.test(obj.name)
+			) {
+				lampHeadNodes.push(obj);
+			}
+
+			if (/^Sample_/i.test(obj.name)) {
+				this.sampleNodes.set(obj.name, obj);
+			} else if (/Geology_Workstation_Console/i.test(obj.name)) {
+				this.getObjectWorldCenter(obj, this.workstationPos);
+			} else if (/Orion_Landing_Pad/i.test(obj.name)) {
+				this.getObjectWorldCenter(obj, this.launchPadPos);
+			} else if (/Airlock_Outer_Door/i.test(obj.name)) {
+				if (!foundAirlock) foundAirlock = obj;
+				this.getObjectWorldCenter(obj, this.resupplyDropPos);
+			} else if (!foundDrill && /Ice_Drill|Auger/i.test(obj.name)) {
+				foundDrill = obj;
+			} else if (/Comm_Dish|Radar_Dish/i.test(obj.name)) {
+				this.commDishes.push(obj);
+			} else if (/Solar_Dust_Layer/i.test(obj.name)) {
+				this.solarDustLayers.push(obj);
+			} else if (/OrionLander|Orion_Lander/i.test(obj.name)) {
+				landerMatches.push(obj);
+			}
+		});
+
+		this.airlockDoor = foundAirlock;
+		this.iceDrillAuger = foundDrill;
+
+		// Deduplicate Outpost_Lamp_Head_* fixtures and make their bulb meshes glow
+		for (const lampObj of lampHeadNodes) {
+			const wp = new THREE.Vector3();
+			this.getObjectWorldCenter(lampObj, wp);
+
+			const alreadyRegistered = this.lampPositions.some(
+				(existing) => existing.distanceTo(wp) < 0.9
+			);
+			if (!alreadyRegistered) {
+				this.lampPositions.push(wp);
+			}
+
+			lampObj.traverse((child) => {
+				if (!(child instanceof THREE.Mesh)) return;
+				const mats = Array.isArray(child.material) ? child.material : [child.material];
+				const glowingMats = mats.map((m) => {
+					const clone = m.clone() as THREE.MeshStandardMaterial;
+					if ('color' in clone && clone.color instanceof THREE.Color) {
+						clone.color.setHex(0xfffbeb);
+					}
+					if ('emissive' in clone && clone.emissive instanceof THREE.Color) {
+						clone.emissive.setHex(0xffdf99);
+						clone.emissiveIntensity = 2.6;
+					}
+					clone.toneMapped = false;
+					if (clone instanceof THREE.MeshStandardMaterial) {
+						this.lampBulbMaterials.push(clone);
+					}
+					return clone;
+				});
+				child.material = Array.isArray(child.material) ? glowingMats : glowingMats[0];
+			});
+		}
+
+		const landerNode = landerMatches[0] ?? null;
+		if (landerNode) {
+			if ((landerNode as THREE.Group).isGroup) {
+				this.landerAssembly = landerNode as THREE.Group;
+			} else {
+				const wrapper = new THREE.Group();
+				wrapper.name = 'Orion_Lander_Assembly';
+				landerNode.parent?.add(wrapper);
+				wrapper.attach(landerNode);
+				this.landerAssembly = wrapper;
+			}
+		}
+
+		if (this.terrainMeshes.length === 0) {
+			const fallbackGround = this.createFallbackGround();
+			root.add(fallbackGround);
+			this.terrainMeshes.push(fallbackGround);
+		}
+
+		if (this.lampPositions.length === 0) {
+			this.lampPositions.push(
+				new THREE.Vector3(10, 4.2, -22),
+				new THREE.Vector3(-12, 4.2, -14),
+				new THREE.Vector3(16, 4.2, 10),
+				new THREE.Vector3(-20, 4.2, 12)
+			);
+		}
+
+		if (this.landerAssembly && !this.landerAscentPlume) {
+			const plume = new THREE.Mesh(
+				new THREE.ConeGeometry(1.1, 4.2, 16, 1, true),
+				new THREE.MeshBasicMaterial({
+					color: 0x38bdf8,
+					transparent: true,
+					opacity: 0.75,
+					side: THREE.DoubleSide
+				})
+			);
+			plume.rotation.x = Math.PI;
+			plume.position.set(0, -2.1, 0);
+			plume.visible = false;
+			this.landerAssembly.add(plume);
+			this.landerAscentPlume = plume;
+		}
+
+		this.outpostRoot = root;
+		scene.add(root);
+
+		this.setupOutpostLightingAndSun(scene);
+		this.updateLighting(0, new THREE.Vector3(11.5, 0, -24.0), 22, false);
 	}
 
-	/**
-	 * Generates a vertical alpha-gradient texture so skyward light pillars glow softly
-	 * at the waypoint base and fade seamlessly into the black lunar sky.
-	 */
-	private createSkywardBeamTexture(): THREE.CanvasTexture {
+	private setupOutpostLightingAndSun(scene: THREE.Scene): void {
+		if (this.lightingGroup) {
+			scene.remove(this.lightingGroup);
+		}
+
+		const group = new THREE.Group();
+		group.name = 'Orion_Outpost_Lighting_And_Sun';
+
+		// 1. Primary Solar Key Light
+		const sunLight = new THREE.DirectionalLight(0xfff7e6, 3.2);
+		sunLight.castShadow = true;
+		sunLight.shadow.mapSize.set(2048, 2048);
+		sunLight.shadow.camera.near = 10;
+		sunLight.shadow.camera.far = 340;
+		sunLight.shadow.camera.left = -95;
+		sunLight.shadow.camera.right = 95;
+		sunLight.shadow.camera.top = 95;
+		sunLight.shadow.camera.bottom = -95;
+		sunLight.shadow.bias = -0.00035;
+		sunLight.shadow.normalBias = 0.02;
+		group.add(sunLight);
+		group.add(sunLight.target);
+		this.sunLight = sunLight;
+
+		// 2. Earthshine & Regolith Bounce Fill Light (prevents pitch-black vacuum shadows)
+		const hemiLight = new THREE.HemisphereLight(0xa5c8ff, 0x475569, 1.05);
+		group.add(hemiLight);
+		this.hemiLight = hemiLight;
+
+		const earthshine = new THREE.DirectionalLight(0x7dd3fc, 0.65);
+		earthshine.position.set(-85, 65, 90);
+		group.add(earthshine);
+		this.earthshineLight = earthshine;
+
+		// 3. Visible Sun Sphere + Additive Solar Corona in the Sky
+		const sunAnchor = new THREE.Group();
+		sunAnchor.name = 'Visible_Lunar_Sun';
+
+		const sunDisc = new THREE.Mesh(
+			new THREE.SphereGeometry(12, 32, 32),
+			new THREE.MeshBasicMaterial({
+				color: 0xffffff,
+				fog: false,
+				toneMapped: false
+			})
+		);
+		sunAnchor.add(sunDisc);
+
+		const coronaTex = this.createSolarCoronaTexture();
+		const innerCorona = new THREE.Sprite(
+			new THREE.SpriteMaterial({
+				map: coronaTex,
+				color: 0xfff3c4,
+				transparent: true,
+				opacity: 0.92,
+				blending: THREE.AdditiveBlending,
+				depthWrite: false,
+				fog: false
+			})
+		);
+		innerCorona.scale.set(78, 78, 1);
+		sunAnchor.add(innerCorona);
+
+		const outerCorona = new THREE.Sprite(
+			new THREE.SpriteMaterial({
+				map: coronaTex,
+				color: 0xfde68a,
+				transparent: true,
+				opacity: 0.48,
+				blending: THREE.AdditiveBlending,
+				depthWrite: false,
+				fog: false
+			})
+		);
+		outerCorona.scale.set(175, 175, 1);
+		sunAnchor.add(outerCorona);
+
+		group.add(sunAnchor);
+		this.sunAnchor = sunAnchor;
+
+		// 4. Vacuum Starfield Dome
+		group.add(this.createStarfieldDome());
+
+		// 5. Real PointLights for every Outpost_Lamp_Head_* bulb
+		for (let i = 0; i < this.lampPositions.length; i++) {
+			const lp = this.lampPositions[i];
+			const pointLight = new THREE.PointLight(0xffe1a6, 22, 36, 1.45);
+			pointLight.name = `Outpost_Lamp_PointLight_${i + 1}`;
+			pointLight.position.set(lp.x, lp.y - 0.35, lp.z);
+			group.add(pointLight);
+			this.lampLights.push(pointLight);
+		}
+
+		// 6. Dedicated Staging & Lab Work Lights so Room 07 & Geology Console are clearly visible
+		const room07Light = new THREE.PointLight(0xe0f2fe, 14, 24, 1.5);
+		room07Light.position.set(11.5, 3.4, -24.0);
+		group.add(room07Light);
+
+		const labLight = new THREE.PointLight(0xbae6fd, 12, 20, 1.5);
+		labLight.position.set(
+			this.workstationPos.x,
+			this.workstationPos.y + 2.8,
+			this.workstationPos.z
+		);
+		group.add(labLight);
+
+		this.lightingGroup = group;
+		scene.add(group);
+	}
+
+	public updateLighting(
+		dt: number,
+		focusPos: THREE.Vector3,
+		sunElevationDeg: number,
+		isNight: boolean
+	): void {
+		this.sunAzimuthRad += dt * 0.004;
+
+		// Keep a dramatic lunar South Pole sun angle visible above the crater rim
+		const effectiveElevationDeg = isNight
+			? Math.max(sunElevationDeg, 3.5)
+			: Math.max(sunElevationDeg, 18);
+		const elevRad = THREE.MathUtils.degToRad(effectiveElevationDeg);
+
+		const sunDir = new THREE.Vector3(
+			Math.cos(elevRad) * Math.sin(this.sunAzimuthRad),
+			Math.sin(elevRad),
+			Math.cos(elevRad) * Math.cos(this.sunAzimuthRad)
+		).normalize();
+
+		if (this.sunAnchor) {
+			this.sunAnchor.position.copy(focusPos).addScaledVector(sunDir, 270);
+		}
+
+		if (this.sunLight) {
+			this.sunLight.position.copy(focusPos).addScaledVector(sunDir, 130);
+			this.sunLight.target.position.copy(focusPos);
+			this.sunLight.target.updateMatrixWorld();
+			this.sunLight.intensity = isNight ? 0.95 : 3.25;
+			this.sunLight.color.setHex(effectiveElevationDeg < 12 ? 0xffedd5 : 0xfff8eb);
+		}
+
+		if (this.hemiLight) {
+			this.hemiLight.intensity = isNight ? 0.65 : 1.1;
+		}
+
+		if (this.earthshineLight) {
+			this.earthshineLight.intensity = isNight ? 0.9 : 0.6;
+		}
+
+		const lampIntensity = isNight ? 30 : 16;
+		for (const light of this.lampLights) {
+			light.intensity = lampIntensity;
+		}
+
+		const bulbEmissive = isNight ? 3.2 : 2.2;
+		for (const mat of this.lampBulbMaterials) {
+			mat.emissiveIntensity = bulbEmissive;
+		}
+	}
+
+	private getObjectWorldCenter(obj: THREE.Object3D, out: THREE.Vector3): THREE.Vector3 {
+		obj.updateWorldMatrix(true, false);
+		const box = new THREE.Box3().setFromObject(obj);
+		if (!box.isEmpty()) {
+			return box.getCenter(out);
+		}
+		return obj.getWorldPosition(out);
+	}
+
+	private createSolarCoronaTexture(): THREE.CanvasTexture {
+		const size = 256;
 		const canvas = document.createElement('canvas');
-		canvas.width = 64;
-		canvas.height = 256;
+		canvas.width = size;
+		canvas.height = size;
 		const ctx = canvas.getContext('2d');
 		if (ctx) {
-			const grad = ctx.createLinearGradient(0, 256, 0, 0);
-			grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.0)');
-			grad.addColorStop(0.03, 'rgba(255, 255, 255, 0.95)');
-			grad.addColorStop(0.18, 'rgba(255, 255, 255, 0.62)');
-			grad.addColorStop(0.52, 'rgba(255, 255, 255, 0.24)');
-			grad.addColorStop(0.84, 'rgba(255, 255, 255, 0.06)');
-			grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+			const half = size / 2;
+			const grad = ctx.createRadialGradient(half, half, 0, half, half, half);
+			grad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
+			grad.addColorStop(0.14, 'rgba(255, 248, 220, 0.92)');
+			grad.addColorStop(0.38, 'rgba(253, 224, 130, 0.35)');
+			grad.addColorStop(0.7, 'rgba(251, 191, 36, 0.08)');
+			grad.addColorStop(1.0, 'rgba(251, 191, 36, 0.0)');
 			ctx.fillStyle = grad;
-			ctx.fillRect(0, 0, 64, 256);
+			ctx.fillRect(0, 0, size, size);
 		}
 		const tex = new THREE.CanvasTexture(canvas);
-		tex.wrapS = THREE.ClampToEdgeWrapping;
-		tex.wrapT = THREE.ClampToEdgeWrapping;
+		tex.needsUpdate = true;
 		return tex;
 	}
 
-	private createSkywardPillarMaterial(
-		colorHex: number,
-		baseOpacity: number
-	): THREE.MeshBasicMaterial {
-		return new THREE.MeshBasicMaterial({
-			color: colorHex,
-			map: this.skyBeamTexture,
-			transparent: true,
-			opacity: baseOpacity,
-			blending: THREE.AdditiveBlending,
-			side: THREE.DoubleSide,
-			depthWrite: false,
+	private createLunarEnvironmentTexture(): THREE.DataTexture {
+		const width = 64;
+		const height = 32;
+		const data = new Uint8Array(width * height * 4);
+
+		for (let y = 0; y < height; y++) {
+			const v = y / (height - 1); // 0 = bottom (regolith), 1 = top (zenith)
+			for (let x = 0; x < width; x++) {
+				const idx = (y * width + x) * 4;
+				if (v < 0.48) {
+					// Lunar regolith ground bounce
+					data[idx] = 88;
+					data[idx + 1] = 94;
+					data[idx + 2] = 106;
+					data[idx + 3] = 255;
+				} else {
+					// Earthshine + solar specular sky
+					const isSolarSpot = y > 20 && x > 26 && x < 38;
+					data[idx] = isSolarSpot ? 255 : 54;
+					data[idx + 1] = isSolarSpot ? 245 : 74;
+					data[idx + 2] = isSolarSpot ? 225 : 108;
+					data[idx + 3] = 255;
+				}
+			}
+		}
+
+		const tex = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+		tex.mapping = THREE.EquirectangularReflectionMapping;
+		tex.colorSpace = THREE.SRGBColorSpace;
+		tex.needsUpdate = true;
+		return tex;
+	}
+
+	private createStarfieldDome(): THREE.Points {
+		const count = 2400;
+		const positions = new Float32Array(count * 3);
+		const colors = new Float32Array(count * 3);
+		const radius = 620;
+
+		for (let i = 0; i < count; i++) {
+			const u = Math.random();
+			const v = Math.random();
+			const theta = 2 * Math.PI * u;
+			const phi = Math.acos(2 * v - 1);
+
+			positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+			positions[i * 3 + 1] = Math.abs(radius * Math.cos(phi)) - 30;
+			positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+
+			const brightness = 0.65 + Math.random() * 0.35;
+			colors[i * 3] = brightness;
+			colors[i * 3 + 1] = brightness * (0.94 + Math.random() * 0.06);
+			colors[i * 3 + 2] = brightness * (0.9 + Math.random() * 0.1);
+		}
+
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+		geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+		const mat = new THREE.PointsMaterial({
+			size: 1.65,
+			sizeAttenuation: false,
+			vertexColors: true,
 			fog: false
 		});
-	}
 
-	private acquireSkyBeaconVisual(index: number): SkywardBeaconVisual {
-		while (this.skyBeaconPool.length <= index) {
-			const idx = this.skyBeaconPool.length;
-			const group = new THREE.Group();
-			group.name = `Skyward_Waypoint_Pillar_${idx}`;
-
-			const beamHeight = 96;
-			const coreMat = this.createSkywardPillarMaterial(SKY_BEACON_CORE_HEX, 0.22);
-			const coreMesh = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.14, 0.42, beamHeight, 16, 1, true),
-				coreMat
-			);
-			coreMesh.position.y = beamHeight * 0.5;
-			coreMesh.renderOrder = 4;
-
-			const haloMat = this.createSkywardPillarMaterial(SKY_BEACON_HALO_HEX, 0.11);
-			const haloMesh = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.65, 1.35, beamHeight, 16, 1, true),
-				haloMat
-			);
-			haloMesh.position.y = beamHeight * 0.5;
-			haloMesh.renderOrder = 3;
-
-			const ringMat = new THREE.MeshBasicMaterial({
-				color: SKY_BEACON_HALO_HEX,
-				transparent: true,
-				opacity: 0.36,
-				blending: THREE.AdditiveBlending,
-				side: THREE.DoubleSide,
-				depthWrite: false,
-				fog: false
-			});
-			const baseRingMesh = new THREE.Mesh(new THREE.RingGeometry(0.65, 1.05, 28), ringMat);
-			baseRingMesh.rotation.x = -Math.PI / 2;
-			baseRingMesh.position.y = 0.08;
-
-			group.add(coreMesh, haloMesh, baseRingMesh);
-			this.skyBeaconContainer.add(group);
-
-			this.skyBeaconPool.push({
-				group,
-				coreMesh,
-				haloMesh,
-				baseRingMesh,
-				coreMat,
-				haloMat,
-				ringMat,
-				phaseOffset: idx * 0.85
-			});
-		}
-		return this.skyBeaconPool[index];
-	}
-
-	/**
-	 * Updates the faint yellow skyward light beams for all active mission waypoints.
-	 */
-	public updateSkywardBeacons(
-		targets: SkywardWaypointTarget[],
-		elapsedSec: number,
-		hasPendingLabAnalysis = false
-	) {
-		for (let i = 0; i < this.skyBeaconPool.length; i++) {
-			if (i >= targets.length) {
-				this.skyBeaconPool[i].group.visible = false;
-			}
-		}
-
-		for (let i = 0; i < targets.length; i++) {
-			const target = targets[i];
-			const visual = this.acquireSkyBeaconVisual(i);
-			visual.group.visible = true;
-			visual.group.position.copy(target.position);
-
-			const intensity = target.intensity ?? 1.0;
-			const rScale = target.radiusScale ?? 1.0;
-			const pulse = 0.85 + Math.sin(elapsedSec * 2.4 + visual.phaseOffset) * 0.15;
-
-			visual.coreMesh.scale.set(rScale, 1, rScale);
-			visual.haloMesh.scale.set(rScale, 1, rScale);
-			visual.baseRingMesh.scale.setScalar(
-				rScale * (0.94 + Math.sin(elapsedSec * 3.0 + visual.phaseOffset) * 0.08)
-			);
-
-			visual.coreMat.opacity = 0.2 * intensity * pulse;
-			visual.haloMat.opacity = 0.1 * intensity * pulse;
-			visual.ringMat.opacity = 0.34 * intensity * pulse;
-		}
-
-		if (this.labAnalysisRing) {
-			const mat = this.labAnalysisRing.material as THREE.MeshBasicMaterial;
-			if (hasPendingLabAnalysis) {
-				mat.color.setHex(SKY_BEACON_HALO_HEX);
-				mat.opacity = 0.65 + Math.sin(elapsedSec * 3.5) * 0.25;
-			} else {
-				mat.color.setHex(0x38bdf8);
-				mat.opacity = 0.45;
-			}
-		}
-	}
-
-	private indexSceneNodes(root: THREE.Object3D) {
-		this.groundMeshes = [];
-		this.commDishes = [];
-		this.supplyCrates = [];
-		this.solarDustLayers = [];
-		this.lampPositions = [];
-		this.sampleNodes.clear();
-		this.landmarkMatches.clear();
-
-		root.traverse((obj) => {
-			if (obj instanceof THREE.Mesh) {
-				const isTransparent =
-					(obj.material as THREE.Material)?.transparent === true ||
-					obj.name.startsWith('Solar_Dust_Layer_');
-				obj.castShadow = !isTransparent;
-				obj.receiveShadow = true;
-			}
-
-			if (
-				obj.name === 'Orion_LOLA_Crater_Terrain' ||
-				obj.name.startsWith('Corridor_') ||
-				obj.name.endsWith('_Pad') ||
-				obj.name.endsWith('_Apron') ||
-				obj.name.endsWith('_Foundation') ||
-				obj.name.endsWith('_Deck') ||
-				obj.name.endsWith('_Walkway') ||
-				obj.name.startsWith('Terrace_Stair_Step_')
-			) {
-				this.groundMeshes.push(obj);
-			}
-
-			if (obj.name === 'Orion_Moon_Rover') this.roverObject = obj;
-			else if (obj.name === 'Geology_Workstation_Console') this.workstationObject = obj;
-			else if (obj.name === 'Storage_Pod_Base') this.storagePodObject = obj;
-			else if (obj.name === 'Lander_Touchdown_Anchor') this.landingPadAnchor = obj;
-			else if (obj.name === 'Airlock_Outer_Door') this.airlockDoor = obj;
-			else if (obj.name === 'Ice_Drill_Auger') this.iceDrillAuger = obj;
-			else if (obj.name.startsWith('Comm_Dish_Reflector_')) this.commDishes.push(obj);
-			else if (obj.name.startsWith('Supply_Crate_0')) this.supplyCrates.push(obj);
-			else if (obj.name.startsWith('Solar_Dust_Layer_')) this.solarDustLayers.push(obj);
-			else if (obj.name.startsWith('Outpost_Lamp_Pole_')) {
-				const wp = new THREE.Vector3();
-				obj.getWorldPosition(wp);
-				this.lampPositions.push(wp);
-			} else if (obj.name.startsWith('Sample_Metal_') || obj.name.startsWith('Sample_NonMetal_')) {
-				this.sampleNodes.set(obj.name, obj);
-			}
-
-			// Match the 5 designated landmark objects in moon_outpost.glb
-			for (const def of LunarOutpostConfig.dropOffZoneDefinitions) {
-				if (this.landmarkMatches.has(def.id)) continue;
-				if (def.nodePatterns.some((pattern) => pattern.test(obj.name))) {
-					this.landmarkMatches.set(def.id, obj);
-				}
-			}
-		});
-
-		if (this.storagePodObject) {
-			this.storagePodObject.getWorldPosition(this.resupplyDropPos);
-			this.resupplyDropPos.x += 5.5;
-		}
-		if (this.workstationObject) {
-			this.workstationObject.getWorldPosition(this.workstationPos);
-		}
-		if (this.landingPadAnchor) {
-			this.landingPadAnchor.getWorldPosition(this.launchPadPos);
-		}
-	}
-
-	/**
-	 * Builds the 5 designated Supply Box Drop-Off Rings anchored beside the real
-	 * landmarks in `moon_outpost.glb` (Command Control, Electricity, Storage Pod, Geology Lab, Airlock).
-	 */
-	private buildDropOffZones(scene: THREE.Scene) {
-		this.dropOffZones = [];
-		const courtyardCenter = new THREE.Vector3(0, 0, -10);
-		const box = new THREE.Box3();
-		const center = new THREE.Vector3();
-		const size = new THREE.Vector3();
-
-		for (const def of LunarOutpostConfig.dropOffZoneDefinitions) {
-			let zoneX = def.fallbackPos[0];
-			let zoneZ = def.fallbackPos[2];
-
-			const matched = this.landmarkMatches.get(def.id);
-			if (matched) {
-				box.setFromObject(matched);
-				if (!box.isEmpty()) {
-					box.getCenter(center);
-					box.getSize(size);
-				} else {
-					matched.getWorldPosition(center);
-					size.set(3.0, 2.0, 3.0);
-				}
-
-				const buildingRadius = Math.min(6.0, Math.max(size.x, size.z) * 0.5);
-				const radialDist = def.id === 'airlock' ? 3.2 : buildingRadius + def.offsetDistance;
-
-				const toCourtyardX = courtyardCenter.x - center.x;
-				const toCourtyardZ = courtyardCenter.z - center.z;
-				const len = Math.hypot(toCourtyardX, toCourtyardZ);
-
-				const dirX = len > 0.05 ? toCourtyardX / len : 0;
-				const dirZ = len > 0.05 ? toCourtyardZ / len : 1;
-
-				zoneX = center.x + dirX * radialDist;
-				zoneZ = center.z + dirZ * radialDist;
-			}
-
-			// Ensure minimum 8.5 m spacing between any two drop-off rings
-			for (const existing of this.dropOffZones) {
-				const dx = zoneX - existing.position.x;
-				const dz = zoneZ - existing.position.z;
-				const d = Math.hypot(dx, dz);
-				if (d < 8.5) {
-					const pushAngle = d > 0.01 ? Math.atan2(dz, dx) : Math.PI * 0.5;
-					zoneX = existing.position.x + Math.cos(pushAngle) * 8.8;
-					zoneZ = existing.position.z + Math.sin(pushAngle) * 8.8;
-				}
-			}
-
-			const hit = this.sampleSurfaceAt(zoneX, zoneZ);
-			const position = new THREE.Vector3(zoneX, hit.y, zoneZ);
-
-			const ringMesh = new THREE.Mesh(
-				new THREE.RingGeometry(2.8, 3.35, 36),
-				new THREE.MeshBasicMaterial({
-					color: 0xfacc15,
-					side: THREE.DoubleSide,
-					transparent: true,
-					opacity: 0.85
-				})
-			);
-			ringMesh.rotation.x = -Math.PI / 2;
-			ringMesh.position.set(position.x, hit.y + 0.09, position.z);
-			ringMesh.name = `DropOff_Ring_${def.id}`;
-			scene.add(ringMesh);
-
-			// Tall faint yellow skyward pillar for the drop-off zone
-			const beaconHeight = 92;
-			const beaconMesh = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.18, 0.65, beaconHeight, 16, 1, true),
-				this.createSkywardPillarMaterial(SKY_BEACON_HALO_HEX, 0.18)
-			);
-			beaconMesh.position.set(position.x, hit.y + beaconHeight * 0.5, position.z);
-			beaconMesh.name = `DropOff_Beacon_${def.id}`;
-			beaconMesh.renderOrder = 3;
-			scene.add(beaconMesh);
-
-			this.dropOffZones.push({
-				id: def.id,
-				label: def.label,
-				shortHint: def.shortHint,
-				position,
-				delivered: false,
-				deliveredCrateName: null,
-				ringMesh,
-				beaconMesh
-			});
-		}
-	}
-
-	public findDropOffZoneNear(
-		pos: THREE.Vector3,
-		radius: number = LunarOutpostConfig.physics.crateDeliverRadius,
-		onlyUndelivered = true
-	): WorldDropOffZone | null {
-		let best: WorldDropOffZone | null = null;
-		let bestDist = radius;
-
-		for (const zone of this.dropOffZones) {
-			if (onlyUndelivered && zone.delivered) continue;
-			const horizDist = Math.hypot(pos.x - zone.position.x, pos.z - zone.position.z);
-			if (horizDist <= bestDist) {
-				bestDist = horizDist;
-				best = zone;
-			}
-		}
-		return best;
-	}
-
-	/**
-	 * Groups the lander meshes parked at `Lander_Touchdown_Anchor` so the spacecraft
-	 * stays solid on the pad and can ignite & ascend during the finale launch.
-	 */
-	private assembleLanderOnPad() {
-		if (!this.outpostRoot) return;
-
-		const landerParts: THREE.Object3D[] = [];
-		const box = new THREE.Box3();
-		const center = new THREE.Vector3();
-		const size = new THREE.Vector3();
-
-		this.outpostRoot.traverse((obj) => {
-			if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
-			if (PAD_OR_GROUND_PATTERN.test(obj.name)) return;
-
-			box.setFromObject(obj);
-			if (box.isEmpty()) return;
-			box.getCenter(center);
-			box.getSize(size);
-
-			if (size.y < 0.22 && Math.max(size.x, size.z) > 5.0) return;
-
-			const matchesName = LANDER_NAME_PATTERN.test(obj.name);
-			const nearPad =
-				Math.hypot(center.x - this.launchPadPos.x, center.z - this.launchPadPos.z) <= 5.2 &&
-				box.min.y >= this.launchPadPos.y - 0.35 &&
-				box.max.y <= this.launchPadPos.y + 15.0;
-
-			if (matchesName || nearPad) {
-				landerParts.push(obj);
-			}
-		});
-
-		if (landerParts.length === 0) return;
-
-		const assembly = new THREE.Group();
-		assembly.name = 'Outpost_Landed_Spacecraft';
-		assembly.position.copy(this.launchPadPos);
-		this.outpostRoot.add(assembly);
-		assembly.updateMatrixWorld(true);
-
-		for (const part of landerParts) {
-			assembly.attach(part);
-		}
-
-		const plume = new THREE.Mesh(
-			new THREE.ConeGeometry(0.95, 6.5, 18),
-			new THREE.MeshBasicMaterial({
-				color: 0x7cc8ff,
-				transparent: true,
-				opacity: 0.88
-			})
-		);
-		plume.position.set(0, -2.4, 0);
-		plume.rotation.x = Math.PI;
-		plume.visible = false;
-		assembly.add(plume);
-
-		this.landerAssembly = assembly;
-		this.landerAscentPlume = plume;
-	}
-
-	private buildZoneRings(scene: THREE.Scene) {
-		const labHit = this.sampleSurfaceAt(this.workstationPos.x, this.workstationPos.z);
-		const labRing = new THREE.Mesh(
-			new THREE.RingGeometry(2.6, 2.95, 36),
-			new THREE.MeshBasicMaterial({
-				color: 0x38bdf8,
-				side: THREE.DoubleSide,
-				transparent: true,
-				opacity: 0.65
-			})
-		);
-		labRing.rotation.x = -Math.PI / 2;
-		labRing.position.set(this.workstationPos.x, labHit.y + 0.08, this.workstationPos.z + 2.2);
-		labRing.name = 'Geology_Analysis_Ring';
-		scene.add(labRing);
-		this.labAnalysisRing = labRing;
-	}
-
-	private buildSampleBeacons(scene: THREE.Scene) {
-		const beaconHeight = 96;
-		for (const [nodeName, sampleObj] of this.sampleNodes.entries()) {
-			const pos = new THREE.Vector3();
-			sampleObj.getWorldPosition(pos);
-
-			// Faint yellow skyward light pillar for geological sample waypoints
-			const beacon = new THREE.Mesh(
-				new THREE.CylinderGeometry(0.15, 0.52, beaconHeight, 16, 1, true),
-				this.createSkywardPillarMaterial(SKY_BEACON_CORE_HEX, 0.2)
-			);
-			beacon.position.set(pos.x, pos.y + beaconHeight * 0.5, pos.z);
-			beacon.renderOrder = 3;
-			beacon.visible = false; // Activated automatically once exploration phase begins
-			scene.add(beacon);
-			this.sampleBeacons.set(nodeName, beacon);
-		}
+		const stars = new THREE.Points(geo, mat);
+		stars.name = 'Lunar_Vacuum_Starfield';
+		return stars;
 	}
 
 	sampleSurfaceAt(x: number, z: number): SurfaceHit {
-		this.rayOrigin.set(x, 120, z);
-		this.raycaster.set(this.rayOrigin, this.downDir);
-		this.raycaster.far = 260;
-
-		const hits = this.raycaster.intersectObjects(this.groundMeshes, false);
-		if (hits.length > 0) {
-			const topHit = hits[0];
-			const normal = topHit.face
-				? topHit.face.normal.clone().transformDirection(topHit.object.matrixWorld).normalize()
-				: new THREE.Vector3(0, 1, 0);
-
-			let surfaceType: SurfaceType = 'Loose_Regolith';
-			for (const h of hits) {
-				const st = h.object.userData?.surface_type as SurfaceType | undefined;
-				if (st) {
-					surfaceType = st;
-					break;
-				}
-				if (h.object.name.endsWith('_Pad') || h.object.name.endsWith('_Apron')) {
-					surfaceType = 'Sintered_Regolith';
-					break;
-				}
+		if (this.terrainMeshes.length > 0) {
+			this.rayOrigin.set(x, 120, z);
+			this.raycaster.set(this.rayOrigin, this.downDir);
+			const hits = this.raycaster.intersectObjects(this.terrainMeshes, false);
+			if (hits.length > 0) {
+				const topHit = hits[0];
+				const normal = topHit.face
+					? topHit.face.normal.clone().transformDirection(topHit.object.matrixWorld).normalize()
+					: this.defaultUp.clone();
+				return {
+					y: topHit.point.y,
+					normal,
+					surfaceType: this.classifySurface(topHit.object.name, x, z)
+				};
 			}
-
-			return { y: topHit.point.y, normal, surfaceType };
 		}
 
-		return { y: 0, normal: new THREE.Vector3(0, 1, 0), surfaceType: 'Loose_Regolith' };
+		return {
+			y: 0,
+			normal: this.defaultUp.clone(),
+			surfaceType: this.classifySurface('', x, z)
+		};
+	}
+
+	getGroundHeight(x: number, z: number): number {
+		return this.sampleSurfaceAt(x, z).y;
+	}
+
+	findObjectByPatterns(patterns: RegExp[]): THREE.Object3D | null {
+		if (!this.outpostRoot) return null;
+		for (const pattern of patterns) {
+			const matches: THREE.Object3D[] = [];
+			this.outpostRoot.traverse((obj) => {
+				if (matches.length === 0 && pattern.test(obj.name)) {
+					matches.push(obj);
+				}
+			});
+			if (matches.length > 0) return matches[0];
+		}
+		return null;
+	}
+
+	private classifySurface(meshName: string, x: number, z: number): SurfaceType {
+		if (/(sintered|pad|plaza)/i.test(meshName)) return 'Sintered_Regolith';
+		if (/(rut|wheel)/i.test(meshName)) return 'Compacted_Wheel_Ruts';
+		if (/(trail|road|path)/i.test(meshName)) return 'Graded_Crater_Trail';
+
+		const distFromPlaza = Math.hypot(x, z + 12);
+		if (distFromPlaza < 24) return 'Sintered_Regolith';
+		if (distFromPlaza < 55) return 'Compacted_Wheel_Ruts';
+		if (distFromPlaza < 95) return 'Graded_Crater_Trail';
+		return 'Loose_Regolith';
+	}
+
+	private createFallbackGround(): THREE.Mesh {
+		const geo = new THREE.PlaneGeometry(500, 500, 64, 64);
+		geo.rotateX(-Math.PI / 2);
+		const mat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.92 });
+		const mesh = new THREE.Mesh(geo, mat);
+		mesh.name = 'Lunar_Regolith_Terrain';
+		mesh.receiveShadow = true;
+		return mesh;
+	}
+
+	private createFallbackOutpost(): THREE.Group {
+		const group = new THREE.Group();
+		group.add(this.createFallbackGround());
+
+		const pad = new THREE.Mesh(
+			new THREE.CylinderGeometry(8.5, 9.0, 0.25, 32),
+			new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.7 })
+		);
+		pad.name = 'Orion_Landing_Pad_NASALogo';
+		pad.position.set(46, 0.12, -52);
+		group.add(pad);
+		return group;
 	}
 }

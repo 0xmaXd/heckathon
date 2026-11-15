@@ -1,39 +1,124 @@
 import * as THREE from 'three';
+import type { CollisionWorld, SurfaceProvider } from '../engine/CollisionWorld';
+import type { CargoReceiver, CargoZoneProvider, PlayerController } from './PlayerController.svelte';
 
-export interface RoverTelemetry {
+export interface RoverControllerConfig {
+	defaultMaxSpeedKmh: number;
+	defaultMaxSlopeDeg: number;
+	defaultWheelbaseM: number;
+	wheelRadiusM: number;
+	boardingRadius: number;
+	deliverRadius: number;
+	boundsXZ: number;
+	surfaceSpeedMultipliers: Record<string, number>;
+	surfaceDrainMultipliers: Record<string, number>;
+}
+
+export const DEFAULT_ROVER_CONFIG: RoverControllerConfig = {
+	defaultMaxSpeedKmh: 16,
+	defaultMaxSlopeDeg: 28,
+	defaultWheelbaseM: 2.3,
+	wheelRadiusM: 0.41,
+	boardingRadius: 3.4,
+	deliverRadius: 3.8,
+	boundsXZ: 215,
+	surfaceSpeedMultipliers: {
+		Sintered_Regolith: 1.0,
+		Loose_Regolith: 0.78,
+		Standard_Floor: 1.0
+	},
+	surfaceDrainMultipliers: {
+		Sintered_Regolith: 0.25,
+		Loose_Regolith: 0.48,
+		Standard_Floor: 0.2
+	}
+};
+
+export interface RoverTelemetrySnapshot {
 	isSeated: boolean;
 	canBoard: boolean;
 	speedKmh: number;
 	headingDeg: number;
 	batteryPct: number;
 	headlightsOn: boolean;
-	loadedItemName: string | null;
+	surfaceType: string;
+	loadedCrateName: string | null;
 }
 
-export class OrionRoverController {
+export interface RoverCargoPlacementResult {
+	accepted: boolean;
+	message: string;
+}
+
+interface FallingOverflowCrate {
+	crate: THREE.Object3D;
+	velocity: THREE.Vector3;
+	rollSpeed: number;
+	pitchSpeed: number;
+	ageSec: number;
+}
+
+function normalizeAngleRad(angle: number): number {
+	return ((angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+
+export class OrionRoverController implements CargoReceiver {
+	private initialPos = new THREE.Vector3();
+	private initialQuat = new THREE.Quaternion();
 	public rover: THREE.Object3D | null = null;
 	public isSeated = false;
+	public loadedCrate: THREE.Object3D | null = null;
+	public config: RoverControllerConfig;
 
 	private steerFL: THREE.Object3D | null = null;
 	private steerFR: THREE.Object3D | null = null;
 	private wheels: THREE.Object3D[] = [];
 	private seatAnchor: THREE.Object3D | null = null;
 	private cargoSlot: THREE.Object3D | null = null;
+	private cargoRackFrame: THREE.Mesh | null = null;
 	private headlights: THREE.SpotLight[] = [];
 
+	private forwardSign: -1 | 1 = -1;
 	private speedMs = 0;
 	private steerAngleRad = 0;
 	private batteryPct = 100;
 	private headlightsOn = true;
-	private loadedItem: THREE.Object3D | null = null;
+	private currentSurface = 'Loose_Regolith';
+	private smoothedNormal = new THREE.Vector3(0, 1, 0);
 
-	// Real NASA Artemis LTV / Apollo LRV specs (loaded from .glb userData if present)
-	private maxSpeedMs = 5.0; // 18.0 km/h
-	private maxSlopeRad = THREE.MathUtils.degToRad(20);
-	private wheelbaseM = 2.3;
+	private boardingYawBaseline: number | null = null;
+	private cargoSnapTimer = 0;
+	private nextFallSide: 1 | -1 = 1;
+	private fallingCrates: FallingOverflowCrate[] = [];
 
-	bindFromScene(outpostRoot: THREE.Object3D) {
-		this.rover = outpostRoot.getObjectByName('Orion_Moon_Rover') ?? null;
+	private maxSpeedMs: number;
+	private maxSlopeRad: number;
+	private wheelbaseM: number;
+
+	constructor(config: Partial<RoverControllerConfig> = {}) {
+		this.config = {
+			...DEFAULT_ROVER_CONFIG,
+			...config,
+			surfaceSpeedMultipliers: {
+				...DEFAULT_ROVER_CONFIG.surfaceSpeedMultipliers,
+				...(config.surfaceSpeedMultipliers ?? {})
+			},
+			surfaceDrainMultipliers: {
+				...DEFAULT_ROVER_CONFIG.surfaceDrainMultipliers,
+				...(config.surfaceDrainMultipliers ?? {})
+			}
+		};
+		this.maxSpeedMs = this.config.defaultMaxSpeedKmh / 3.6;
+		this.maxSlopeRad = THREE.MathUtils.degToRad(this.config.defaultMaxSlopeDeg);
+		this.wheelbaseM = this.config.defaultWheelbaseM;
+	}
+
+	get vehicleObject(): THREE.Object3D | null {
+		return this.rover;
+	}
+
+	init(roverObject: THREE.Object3D | null) {
+		this.rover = roverObject;
 		if (!this.rover) return;
 
 		if (typeof this.rover.userData?.nasa_top_speed_kmh === 'number') {
@@ -46,47 +131,396 @@ export class OrionRoverController {
 			this.wheelbaseM = this.rover.userData.nasa_wheelbase_m;
 		}
 
+		this.initialPos.copy(this.rover.position);
+		this.initialQuat.copy(this.rover.quaternion);
 		this.steerFL = this.rover.getObjectByName('Rover_Steer_FL') ?? null;
 		this.steerFR = this.rover.getObjectByName('Rover_Steer_FR') ?? null;
 		this.seatAnchor = this.rover.getObjectByName('Rover_Driver_Seat_Anchor') ?? null;
 		this.cargoSlot = this.rover.getObjectByName('Rover_Cargo_Slot') ?? null;
 
+		if (!this.cargoSlot) {
+			const slot = new THREE.Group();
+			slot.name = 'Rover_Cargo_Slot';
+			slot.position.set(0, 0.56, 1.02);
+			this.rover.add(slot);
+			this.cargoSlot = slot;
+		}
+
+		const wheelFL = this.rover.getObjectByName('Rover_Wheel_FL');
+		const wheelRL = this.rover.getObjectByName('Rover_Wheel_RL');
+		if (wheelFL && wheelRL && Math.abs(wheelFL.position.z - wheelRL.position.z) > 0.1) {
+			this.forwardSign = wheelFL.position.z < wheelRL.position.z ? -1 : 1;
+		} else if (Math.abs(this.cargoSlot.position.z) > 0.05) {
+			this.forwardSign = this.cargoSlot.position.z > 0 ? -1 : 1;
+		} else {
+			this.forwardSign = -1;
+		}
+
+		const existingRack = this.cargoSlot.getObjectByName('Rover_Cargo_Rack_Indicator');
+		if (!existingRack) {
+			const rackFrame = new THREE.Mesh(
+				new THREE.RingGeometry(0.46, 0.54, 4),
+				new THREE.MeshBasicMaterial({
+					color: 0xfacc15,
+					side: THREE.DoubleSide,
+					transparent: true,
+					opacity: 0.48
+				})
+			);
+			rackFrame.rotation.x = -Math.PI / 2;
+			rackFrame.rotation.z = Math.PI / 4;
+			rackFrame.position.set(0, 0.03, 0);
+			rackFrame.name = 'Rover_Cargo_Rack_Indicator';
+			this.cargoSlot.add(rackFrame);
+			this.cargoRackFrame = rackFrame;
+		} else {
+			this.cargoRackFrame = existingRack as THREE.Mesh;
+		}
+
 		this.wheels = ['Rover_Wheel_FL', 'Rover_Wheel_FR', 'Rover_Wheel_RL', 'Rover_Wheel_RR']
-			.map((n) => this.rover?.getObjectByName(n) ?? null)
+			.map((name) => this.rover?.getObjectByName(name) ?? null)
 			.filter((w): w is THREE.Object3D => w !== null);
 
-		// Attach twin LED spotlights for driving inside the shadowed Ice Drill crater
+		for (const oldLight of this.headlights) {
+			oldLight.parent?.remove(oldLight.target);
+			oldLight.parent?.remove(oldLight);
+		}
 		this.headlights = [];
 		for (const hx of [-0.72, 0.72]) {
-			const spot = new THREE.SpotLight(0xe0f2fe, 4.5, 42, Math.PI / 5, 0.45, 1.2);
-			spot.position.set(hx, 0.25, 1.65);
-			spot.target.position.set(hx, -0.4, 12.0);
+			const spot = new THREE.SpotLight(0xe0f2fe, 7.5, 65, Math.PI / 4.5, 0.45, 1.0);
+			spot.position.set(hx, 0.35, 1.65 * this.forwardSign);
+			spot.target.position.set(hx, -0.45, 16.0 * this.forwardSign);
 			this.rover.add(spot, spot.target);
 			this.headlights.push(spot);
 		}
+
+		this.relocateFrontAntennaAndShieldToRear();
 	}
 
-	isPlayerInRange(playerPos: THREE.Vector3, radius = 4.5): boolean {
-		if (!this.rover) return false;
-		return playerPos.distanceTo(this.rover.position) <= radius;
+	reset(playerObject: THREE.Object3D, scene?: THREE.Object3D): void {
+		if (this.isSeated) {
+			this.isSeated = false;
+			playerObject.visible = true;
+		}
+
+		if (this.loadedCrate) {
+			const targetScene = scene ?? this.resolveRootObject(this.rover);
+			targetScene?.attach(this.loadedCrate);
+			this.loadedCrate = null;
+		}
+
+		this.fallingCrates = [];
+		this.speedMs = 0;
+		this.steerAngleRad = 0;
+		this.batteryPct = 100;
+		this.boardingYawBaseline = null;
+		this.cargoSnapTimer = 0;
+		this.smoothedNormal.set(0, 1, 0);
+		this.headlightsOn = true;
+
+		for (const light of this.headlights) {
+			light.visible = true;
+		}
+
+		if (this.steerFL) this.steerFL.rotation.y = 0;
+		if (this.steerFR) this.steerFR.rotation.y = 0;
+
+		if (this.rover) {
+			this.rover.position.copy(this.initialPos);
+			this.rover.quaternion.copy(this.initialQuat);
+		}
 	}
 
-	/** Call when player presses [E] */
-	toggleEnterExit(playerObject: THREE.Object3D): boolean {
+	private relocateFrontAntennaAndShieldToRear() {
+		if (!this.rover) return;
+
+		this.rover.updateMatrixWorld(true);
+		const invRoverMatrix = this.rover.matrixWorld.clone().invert();
+
+		const protectedNodes = new Set<THREE.Object3D>();
+		const protectSubtree = (root: THREE.Object3D | null) => {
+			if (!root) return;
+			root.traverse((child) => protectedNodes.add(child));
+		};
+		protectSubtree(this.cargoSlot);
+		protectSubtree(this.cargoRackFrame);
+		protectSubtree(this.seatAnchor);
+		protectSubtree(this.steerFL);
+		protectSubtree(this.steerFR);
+		for (const w of this.wheels) protectSubtree(w);
+		for (const h of this.headlights) {
+			protectSubtree(h);
+			protectSubtree(h.target);
+		}
+
+		const antennaNamePattern =
+			/(antenna|dish|comm|radar|mast|shield|reflector|gimbal|sensor|scope|umbrella|canopy|visor|windscreen|windshield)/i;
+		const corePartPattern =
+			/(chassis|body|frame|wheel|tire|axle|suspension|seat|cargo|light|lamp|fender|bumper)/i;
+
+		const candidates: THREE.Object3D[] = [];
+		const box = new THREE.Box3();
+		const center = new THREE.Vector3();
+		const size = new THREE.Vector3();
+
+		const visit = (node: THREE.Object3D) => {
+			if (node !== this.rover) {
+				if (protectedNodes.has(node)) return;
+
+				const isNamedAntennaOrShield =
+					antennaNamePattern.test(node.name) && !corePartPattern.test(node.name);
+
+				if (isNamedAntennaOrShield) {
+					candidates.push(node);
+					return;
+				}
+
+				if (node instanceof THREE.Mesh && !corePartPattern.test(node.name)) {
+					box.setFromObject(node);
+					if (!box.isEmpty()) {
+						box.applyMatrix4(invRoverMatrix);
+						box.getCenter(center);
+						box.getSize(size);
+
+						const inFrontHalf = center.z * this.forwardSign > 0.05;
+						const protrudesIntoView = box.max.y > 0.78 && size.y > 0.22;
+						const isCompactAttachment = size.x < 1.15 && size.z < 1.15;
+
+						if (inFrontHalf && protrudesIntoView && isCompactAttachment) {
+							candidates.push(node);
+							return;
+						}
+					}
+				}
+			}
+
+			for (const child of node.children) {
+				visit(child);
+			}
+		};
+
+		visit(this.rover);
+
+		const targetRearX = 0.64 * this.forwardSign;
+		const targetRearZ = -1.42 * this.forwardSign;
+		const localDelta = new THREE.Vector3();
+		const worldDelta = new THREE.Vector3();
+		const parentScale = new THREE.Vector3();
+		const parentWorldQuat = new THREE.Quaternion();
+		const invParentQuat = new THREE.Quaternion();
+
+		for (const part of candidates) {
+			this.rover.updateMatrixWorld(true);
+			box.setFromObject(part);
+			if (box.isEmpty()) {
+				part.visible = false;
+				continue;
+			}
+			box.applyMatrix4(invRoverMatrix);
+			box.getCenter(center);
+
+			if (center.z * this.forwardSign <= -0.25) continue;
+
+			localDelta.set(targetRearX - center.x, 0, targetRearZ - center.z);
+			worldDelta
+				.copy(localDelta)
+				.transformDirection(this.rover.matrixWorld)
+				.multiplyScalar(localDelta.length());
+
+			if (part.parent) {
+				part.parent.getWorldQuaternion(parentWorldQuat);
+				part.parent.getWorldScale(parentScale);
+				invParentQuat.copy(parentWorldQuat).invert();
+				worldDelta.applyQuaternion(invParentQuat);
+				part.position.x += worldDelta.x / (parentScale.x || 1);
+				part.position.z += worldDelta.z / (parentScale.z || 1);
+			}
+
+			this.rover.updateMatrixWorld(true);
+			box.setFromObject(part);
+			box.applyMatrix4(invRoverMatrix);
+			box.getCenter(center);
+			if (center.z * this.forwardSign > -0.35) {
+				part.visible = false;
+			}
+		}
+	}
+
+	private getRoverForwardYaw(): number {
+		if (!this.rover) return 0;
+		return this.rover.rotation.y + (this.forwardSign < 0 ? Math.PI : 0);
+	}
+
+	isInBoardingRange(playerPos: THREE.Vector3): boolean {
 		if (!this.rover) return false;
+		return playerPos.distanceTo(this.rover.position) <= this.config.boardingRadius;
+	}
+
+	isNearCargoRack(playerPos: THREE.Vector3, radius = 3.55): boolean {
+		if (!this.rover) return false;
+		if (playerPos.distanceTo(this.rover.position) <= radius) return true;
+
+		if (this.cargoSlot) {
+			const rackWorld = new THREE.Vector3();
+			this.cargoSlot.getWorldPosition(rackWorld);
+			if (playerPos.distanceTo(rackWorld) <= 2.55) return true;
+		}
+		return false;
+	}
+
+	isCrateFalling(crate: THREE.Object3D): boolean {
+		return this.fallingCrates.some((f) => f.crate === crate);
+	}
+
+	tryPlaceCrateFromPlayer(
+		crate: THREE.Object3D,
+		scene: THREE.Object3D,
+		surface: SurfaceProvider
+	): RoverCargoPlacementResult {
+		if (!this.rover || !this.cargoSlot) {
+			return { accepted: false, message: `Dropped ${crate.name}` };
+		}
+
+		if (!this.loadedCrate) {
+			this.attachCrateToRearDeck(crate);
+			return {
+				accepted: true,
+				message: `Secured ${crate.name} onto top-back of Rover (1/1)`
+			};
+		}
+
+		this.launchOverflowCrateToSide(crate, scene, surface);
+		return {
+			accepted: false,
+			message: `Rover rack full (1 box max) — ${crate.name} fell off the side!`
+		};
+	}
+
+	takeLoadedCrateForPlayer(): THREE.Object3D | null {
+		if (!this.loadedCrate) return null;
+		const crate = this.loadedCrate;
+		this.loadedCrate = null;
+		this.cargoSnapTimer = 0;
+		return crate;
+	}
+
+	private attachCrateToRearDeck(crate: THREE.Object3D) {
+		if (!this.cargoSlot) return;
+		this.cargoSlot.attach(crate);
+		crate.position.set(0, 0.36, 0);
+		crate.rotation.set(0, 0, 0);
+		this.loadedCrate = crate;
+		this.cargoSnapTimer = 0.28;
+	}
+
+	private resolveRootObject(obj: THREE.Object3D | null): THREE.Object3D | null {
+		let cur = obj;
+		while (cur?.parent) {
+			cur = cur.parent;
+		}
+		return cur;
+	}
+
+	private launchOverflowCrateToSide(
+		crate: THREE.Object3D,
+		parentScene: THREE.Object3D,
+		surface: SurfaceProvider
+	) {
+		if (!this.rover || !this.cargoSlot) return;
+
+		this.rover.updateMatrixWorld(true);
+		const rackWorld = new THREE.Vector3();
+		this.cargoSlot.getWorldPosition(rackWorld);
+
+		parentScene.attach(crate);
+		crate.position.set(rackWorld.x, rackWorld.y + 0.68, rackWorld.z);
+		crate.rotation.set(0, this.rover.rotation.y, 0);
+
+		const roverRight = new THREE.Vector3(-this.forwardSign, 0, 0)
+			.applyQuaternion(this.rover.quaternion)
+			.setY(0)
+			.normalize();
+		const roverForward = new THREE.Vector3(0, 0, this.forwardSign)
+			.applyQuaternion(this.rover.quaternion)
+			.setY(0)
+			.normalize();
+
+		const sideDir = this.nextFallSide;
+		this.nextFallSide = sideDir === 1 ? -1 : 1;
+
+		const lateralSpeed = 2.65 + Math.random() * 0.45;
+		const velocity = new THREE.Vector3()
+			.addScaledVector(roverRight, sideDir * lateralSpeed)
+			.addScaledVector(roverForward, -0.55)
+			.add(new THREE.Vector3(0, 1.35, 0));
+
+		const projectedX = crate.position.x + velocity.x * 0.65;
+		const projectedZ = crate.position.z + velocity.z * 0.65;
+		const groundHit = surface.sampleSurfaceAt(projectedX, projectedZ);
+		if (crate.position.y < groundHit.y + 0.6) {
+			crate.position.y = groundHit.y + 0.65;
+		}
+
+		this.fallingCrates = this.fallingCrates.filter((f) => f.crate !== crate);
+		this.fallingCrates.push({
+			crate,
+			velocity,
+			rollSpeed: -sideDir * 4.4,
+			pitchSpeed: 1.5,
+			ageSec: 0
+		});
+	}
+
+	toggleEnterExit(
+		playerObject: THREE.Object3D,
+		surface: SurfaceProvider,
+		scene?: THREE.Object3D
+	): boolean {
+		if (!this.rover) return false;
+
+		const playerController = playerObject.userData?.controller as PlayerController | undefined;
 
 		if (!this.isSeated) {
-			if (!this.isPlayerInRange(playerObject.position)) return false;
+			if (!this.isInBoardingRange(playerObject.position)) return false;
+
+			if (playerController?.carryingCrate) {
+				const heldCrate = playerController.carryingCrate;
+				playerController.clearCarriedItem();
+				const targetScene = scene ?? this.resolveRootObject(this.rover);
+				if (!this.loadedCrate) {
+					this.attachCrateToRearDeck(heldCrate);
+				} else if (targetScene) {
+					this.launchOverflowCrateToSide(heldCrate, targetScene, surface);
+				}
+			}
+
+			this.boardingYawBaseline = null;
+			if (playerController) {
+				playerController.yawRad = 0;
+				playerController.pitchRad = -0.05;
+			}
+
+			playerObject.visible = false;
 			this.isSeated = true;
 			return true;
-		} else {
-			this.isSeated = false;
-			this.speedMs = 0;
-			// Step out safely beside the left side of the rover
-			const exitOffset = new THREE.Vector3(-2.1, 0, 0).applyQuaternion(this.rover.quaternion);
-			playerObject.position.copy(this.rover.position).add(exitOffset);
-			return true;
 		}
+
+		this.isSeated = false;
+		this.speedMs = 0;
+		this.boardingYawBaseline = null;
+
+		const exitPos = new THREE.Vector3(2.3 * this.forwardSign, 0, 0)
+			.applyQuaternion(this.rover.quaternion)
+			.add(this.rover.position);
+		const hit = surface.sampleSurfaceAt(exitPos.x, exitPos.z);
+		playerObject.position.set(exitPos.x, hit.y, exitPos.z);
+
+		playerObject.visible = true;
+		if (playerController) {
+			playerController.yawRad = this.getRoverForwardYaw();
+			playerController.pitchRad = 0;
+		}
+		return true;
 	}
 
 	toggleHeadlights() {
@@ -96,58 +530,144 @@ export class OrionRoverController {
 		}
 	}
 
-	/** Load/unload nearby movable Supply Crate or Lunar Sample onto rear rack ([F]) */
-	toggleCargoItem(candidates: THREE.Object3D[], sceneRoot: THREE.Object3D): string | null {
+	loadOrUnloadCrate(
+		crates: THREE.Object3D[],
+		scene: THREE.Object3D,
+		surface: SurfaceProvider,
+		zoneProvider?: CargoZoneProvider | null
+	): string | null {
 		if (!this.rover || !this.cargoSlot) return null;
 
-		if (this.loadedItem) {
-			const dropWorld = new THREE.Vector3();
-			this.cargoSlot.getWorldPosition(dropWorld);
-			const sideDrop = new THREE.Vector3(2.0, -0.35, 0).applyQuaternion(this.rover.quaternion);
-			sceneRoot.attach(this.loadedItem);
-			this.loadedItem.position.copy(dropWorld).add(sideDrop);
-			const droppedName = this.loadedItem.name;
-			this.loadedItem = null;
-			return `Unloaded ${droppedName}`;
+		if (this.loadedCrate) {
+			const nearbyZone =
+				zoneProvider?.findDropOffZoneNear(this.rover.position, this.config.deliverRadius, true) ??
+				null;
+
+			const sideDrop = nearbyZone
+				? nearbyZone.position.clone()
+				: new THREE.Vector3(-2.2 * this.forwardSign, 0, -0.5 * this.forwardSign)
+						.applyQuaternion(this.rover.quaternion)
+						.add(this.rover.position);
+			const hit = surface.sampleSurfaceAt(sideDrop.x, sideDrop.z);
+
+			scene.attach(this.loadedCrate);
+			this.loadedCrate.position.set(sideDrop.x, hit.y + 0.39, sideDrop.z);
+			this.loadedCrate.rotation.set(0, nearbyZone ? 0 : this.getRoverForwardYaw(), 0);
+
+			const name = this.loadedCrate.name;
+			this.loadedCrate = null;
+			return `Unloaded ${name}`;
 		}
 
 		let closest: THREE.Object3D | null = null;
-		let bestDist = 4.2;
-		for (const item of candidates) {
-			const d = item.position.distanceTo(this.rover.position);
+		let bestDist = 4.8;
+		const cratePos = new THREE.Vector3();
+
+		for (const crate of crates) {
+			if (crate.userData?.delivered) continue;
+			if (this.isCrateFalling(crate)) continue;
+			crate.getWorldPosition(cratePos);
+			const d = cratePos.distanceTo(this.rover.position);
 			if (d < bestDist) {
 				bestDist = d;
-				closest = item;
+				closest = crate;
 			}
 		}
 
 		if (closest) {
-			this.cargoSlot.attach(closest);
-			closest.position.set(0, 0.25, 0);
-			closest.rotation.set(0, 0, 0);
-			this.loadedItem = closest;
-			return `Loaded ${closest.name}`;
+			this.attachCrateToRearDeck(closest);
+			return `Loaded ${closest.name} onto top-back of Rover`;
 		}
 		return null;
+	}
+
+	applyFirstPersonDriverCamera(
+		camera: THREE.PerspectiveCamera,
+		headYawOffsetRad: number,
+		headPitchRad: number
+	): boolean {
+		if (!this.isSeated || !this.rover) return false;
+
+		if (this.boardingYawBaseline === null) {
+			this.boardingYawBaseline = headYawOffsetRad;
+		}
+
+		const relativeHeadYaw = THREE.MathUtils.clamp(
+			normalizeAngleRad(headYawOffsetRad - this.boardingYawBaseline),
+			-2.0,
+			2.0
+		);
+		const clampedPitch = THREE.MathUtils.clamp(headPitchRad, -0.75, 0.85);
+
+		this.rover.updateMatrixWorld(true);
+		const eyeWorld = new THREE.Vector3();
+		if (this.seatAnchor) {
+			this.seatAnchor.getWorldPosition(eyeWorld);
+			const upOffset = new THREE.Vector3(0, 0.68, 0.08 * this.forwardSign).applyQuaternion(
+				this.rover.quaternion
+			);
+			eyeWorld.add(upOffset);
+		} else {
+			eyeWorld
+				.set(-0.46 * this.forwardSign, 1.32, 0.28 * this.forwardSign)
+				.applyMatrix4(this.rover.matrixWorld);
+		}
+		camera.position.copy(eyeWorld);
+
+		const turnLookAssist = this.speedMs >= -0.05 ? this.steerAngleRad * 0.2 : 0;
+		const totalYaw = this.getRoverForwardYaw() + relativeHeadYaw + turnLookAssist;
+
+		const lookDir = new THREE.Vector3(
+			Math.sin(totalYaw) * Math.cos(clampedPitch),
+			Math.sin(clampedPitch),
+			Math.cos(totalYaw) * Math.cos(clampedPitch)
+		);
+		camera.lookAt(eyeWorld.clone().add(lookDir));
+		return true;
 	}
 
 	update(
 		dt: number,
 		keys: Set<string>,
 		playerObject: THREE.Object3D,
-		getSurfaceHeightAt: (x: number, z: number) => number
-	): RoverTelemetry {
+		surface: SurfaceProvider,
+		collisions?: CollisionWorld | null
+	): RoverTelemetrySnapshot {
+		this.updateFallingOverflowCrates(dt, surface, collisions);
+
 		if (!this.rover) {
 			return {
 				isSeated: false,
 				canBoard: false,
 				speedKmh: 0,
 				headingDeg: 0,
-				batteryPct: this.batteryPct,
-				headlightsOn: this.headlightsOn,
-				loadedItemName: null
+				batteryPct: 100,
+				headlightsOn: true,
+				surfaceType: 'Loose_Regolith',
+				loadedCrateName: null
 			};
 		}
+
+		if (this.loadedCrate && this.cargoSnapTimer > 0) {
+			this.cargoSnapTimer = Math.max(0, this.cargoSnapTimer - dt);
+			const t = this.cargoSnapTimer / 0.28;
+			this.loadedCrate.position.set(0, 0.36 + Math.sin(t * Math.PI) * 0.14, 0);
+			this.loadedCrate.rotation.set(0, 0, 0);
+		}
+
+		if (this.cargoRackFrame) {
+			const mat = this.cargoRackFrame.material as THREE.MeshBasicMaterial;
+			if (this.loadedCrate) {
+				mat.color.setHex(0x10b981);
+				mat.opacity = 0.78;
+			} else {
+				mat.color.setHex(0xfacc15);
+				mat.opacity = 0.45;
+			}
+		}
+
+		const hit = surface.sampleSurfaceAt(this.rover.position.x, this.rover.position.z);
+		this.currentSurface = hit.surfaceType ?? 'Loose_Regolith';
 
 		let throttle = 0;
 		let steerInput = 0;
@@ -158,20 +678,22 @@ export class OrionRoverController {
 			if (keys.has('KeyD') || keys.has('ArrowRight')) steerInput -= 1;
 		}
 
-		// Acceleration & lunar regolith rolling resistance
-		const accel = throttle >= 0 ? 3.8 : 4.5;
+		const surfaceMult = this.config.surfaceSpeedMultipliers[this.currentSurface] ?? 0.85;
+		const effectiveMaxSpeed = this.maxSpeedMs * surfaceMult;
+
 		if (throttle !== 0) {
+			const accel = throttle > 0 ? 4.2 : 5.0;
 			this.speedMs = THREE.MathUtils.clamp(
 				this.speedMs + throttle * accel * dt,
-				-this.maxSpeedMs * 0.5,
-				this.maxSpeedMs
+				-effectiveMaxSpeed * 0.5,
+				effectiveMaxSpeed
 			);
-			this.batteryPct = Math.max(0, this.batteryPct - Math.abs(throttle) * 0.08 * dt);
+			const drain = this.config.surfaceDrainMultipliers[this.currentSurface] ?? 0.35;
+			this.batteryPct = Math.max(0, this.batteryPct - Math.abs(throttle) * drain * dt);
 		} else {
-			this.speedMs = THREE.MathUtils.lerp(this.speedMs, 0, Math.min(1, dt * 3.2));
+			this.speedMs = THREE.MathUtils.lerp(this.speedMs, 0, Math.min(1, dt * 3.4));
 		}
 
-		// Ackermann front-wheel steering
 		const targetSteer = steerInput * THREE.MathUtils.degToRad(28);
 		this.steerAngleRad = THREE.MathUtils.lerp(
 			this.steerAngleRad,
@@ -185,48 +707,137 @@ export class OrionRoverController {
 			const angularVel = (this.speedMs / this.wheelbaseM) * Math.tan(this.steerAngleRad);
 			this.rover.rotation.y += angularVel * dt;
 
-			const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(
+			const forward = new THREE.Vector3(0, 0, this.forwardSign).applyAxisAngle(
 				new THREE.Vector3(0, 1, 0),
 				this.rover.rotation.y
 			);
-			const nextX = this.rover.position.x + forward.x * this.speedMs * dt;
-			const nextZ = this.rover.position.z + forward.z * this.speedMs * dt;
+			const bounds = this.config.boundsXZ;
+			const nextX = THREE.MathUtils.clamp(
+				this.rover.position.x + forward.x * this.speedMs * dt,
+				-bounds,
+				bounds
+			);
+			const nextZ = THREE.MathUtils.clamp(
+				this.rover.position.z + forward.z * this.speedMs * dt,
+				-bounds,
+				bounds
+			);
 
-			// Enforce NASA LTV 20-degree max crater wall climb limit
-			const currGround = getSurfaceHeightAt(this.rover.position.x, this.rover.position.z);
-			const nextGround = getSurfaceHeightAt(nextX, nextZ);
+			const nextHit = surface.sampleSurfaceAt(nextX, nextZ);
 			const stepDist = Math.hypot(nextX - this.rover.position.x, nextZ - this.rover.position.z);
-			const slopeRad = stepDist > 0.0001 ? Math.atan2(nextGround - currGround, stepDist) : 0;
+			const slopeRad = stepDist > 0.0001 ? Math.atan2(nextHit.y - hit.y, stepDist) : 0;
 
 			if (slopeRad <= this.maxSlopeRad) {
+				const prevX = this.rover.position.x;
+				const prevZ = this.rover.position.z;
+
 				this.rover.position.x = nextX;
 				this.rover.position.z = nextZ;
-				this.rover.position.y = nextGround + 0.54;
+
+				if (collisions) {
+					collisions.resolveHorizontal(this.rover.position, 1.38, 1.8, {
+						includeVehicle: false,
+						ignoredObject: this.loadedCrate
+					});
+				}
+
+				const groundAtResolved = surface.sampleSurfaceAt(
+					this.rover.position.x,
+					this.rover.position.z
+				);
+				this.rover.position.y = groundAtResolved.y + 0.54;
+				this.smoothedNormal.lerp(groundAtResolved.normal, Math.min(1, dt * 8.0)).normalize();
+
+				const movedDist = Math.hypot(this.rover.position.x - prevX, this.rover.position.z - prevZ);
+				if (movedDist < stepDist * 0.35) {
+					this.speedMs *= 0.25;
+				}
 			} else {
 				this.speedMs = 0;
 			}
 
-			// Spin all 4 wheels proportional to wheel radius (0.42m)
-			const wheelSpin = (this.speedMs * dt) / 0.42;
-			for (const w of this.wheels) {
-				w.rotation.x += wheelSpin;
+			const wheelSpin = ((this.speedMs * dt) / this.config.wheelRadiusM) * this.forwardSign;
+			for (const wheel of this.wheels) {
+				wheel.rotation.x += wheelSpin;
 			}
 		}
 
-		// Keep seated astronaut synced to driver seat anchor
-		if (this.isSeated && this.seatAnchor) {
-			this.seatAnchor.getWorldPosition(playerObject.position);
-			playerObject.rotation.y = this.rover.rotation.y;
+		const yaw = this.rover.rotation.y;
+		const localNormalX =
+			this.smoothedNormal.x * Math.cos(yaw) - this.smoothedNormal.z * Math.sin(yaw);
+		const localNormalZ =
+			this.smoothedNormal.x * Math.sin(yaw) + this.smoothedNormal.z * Math.cos(yaw);
+		this.rover.rotation.x = THREE.MathUtils.clamp(
+			Math.atan2(localNormalZ, this.smoothedNormal.y),
+			-0.32,
+			0.32
+		);
+		this.rover.rotation.z = THREE.MathUtils.clamp(
+			-Math.atan2(localNormalX, this.smoothedNormal.y),
+			-0.32,
+			0.32
+		);
+
+		if (this.isSeated) {
+			playerObject.visible = false;
+			if (this.seatAnchor) {
+				this.seatAnchor.getWorldPosition(playerObject.position);
+				playerObject.position.y -= 0.4;
+				playerObject.rotation.y = this.getRoverForwardYaw();
+			}
 		}
 
 		return {
 			isSeated: this.isSeated,
-			canBoard: !this.isSeated && this.isPlayerInRange(playerObject.position),
+			canBoard: !this.isSeated && this.isInBoardingRange(playerObject.position),
 			speedKmh: Math.abs(this.speedMs * 3.6),
-			headingDeg: (THREE.MathUtils.radToDeg(this.rover.rotation.y) + 360) % 360,
-			batteryPct: this.batteryPct,
+			headingDeg: Math.round(
+				((THREE.MathUtils.radToDeg(this.getRoverForwardYaw()) % 360) + 360) % 360
+			),
+			batteryPct: Math.round(this.batteryPct),
 			headlightsOn: this.headlightsOn,
-			loadedItemName: this.loadedItem?.name ?? null
+			surfaceType: this.currentSurface,
+			loadedCrateName: this.loadedCrate?.name ?? null
 		};
+	}
+
+	private updateFallingOverflowCrates(
+		dt: number,
+		surface: SurfaceProvider,
+		collisions?: CollisionWorld | null
+	) {
+		if (this.fallingCrates.length === 0) return;
+
+		const fallGravity = 4.6;
+		for (let i = this.fallingCrates.length - 1; i >= 0; i--) {
+			const item = this.fallingCrates[i];
+			item.ageSec += dt;
+
+			item.velocity.y -= fallGravity * dt;
+			item.crate.position.addScaledVector(item.velocity, dt);
+			item.crate.rotation.z += item.rollSpeed * dt;
+			item.crate.rotation.x += item.pitchSpeed * dt;
+
+			const ground = surface.sampleSurfaceAt(item.crate.position.x, item.crate.position.z);
+			const restY = ground.y + 0.39;
+
+			if (item.crate.position.y <= restY || item.ageSec > 2.5) {
+				item.crate.position.y = restY;
+				item.crate.rotation.x = 0;
+				item.crate.rotation.z = 0;
+
+				if (collisions) {
+					collisions.resolveHorizontal(item.crate.position, 0.56, 0.85, {
+						vehicleObj: this.rover,
+						includeVehicle: true,
+						ignoredObject: item.crate
+					});
+				}
+				const settledGround = surface.sampleSurfaceAt(item.crate.position.x, item.crate.position.z);
+				item.crate.position.y = settledGround.y + 0.39;
+
+				this.fallingCrates.splice(i, 1);
+			}
+		}
 	}
 }

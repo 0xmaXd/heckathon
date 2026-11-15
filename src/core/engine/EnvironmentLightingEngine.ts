@@ -1,21 +1,54 @@
 import * as THREE from 'three';
-import type { SolarCycleState } from '../lunar-outpost.types';
 
-export class LunarSunCycleSystem {
-	private readonly cycleDurationSec = 22.0;
-	private readonly orbitRadius = 520;
+export interface CelestialCycleConfig {
+	cycleDurationSec: number;
+	initialElapsedSec: number;
+	orbitRadius: number;
+	maxSunIntensity: number;
+	fillLightColorHex: number;
+	hemiSkyHex: number;
+	hemiGroundHex: number;
+	lampColorHex: number;
+	lampMaxIntensity: number;
+}
+
+export const DEFAULT_LUNAR_CELESTIAL_CONFIG: CelestialCycleConfig = {
+	cycleDurationSec: 22.0,
+	initialElapsedSec: 3.2,
+	orbitRadius: 520,
+	maxSunIntensity: 5.4,
+	fillLightColorHex: 0x93c5fd,
+	hemiSkyHex: 0x93b4e8,
+	hemiGroundHex: 0x3b4252,
+	lampColorHex: 0xe0f2fe,
+	lampMaxIntensity: 32.0
+};
+
+export interface CelestialCycleSnapshot {
+	phaseLabel: 'Lunar Day' | 'Crater Twilight' | 'Lunar Night';
+	sunElevationDeg: number;
+	cycleProgressPct: number;
+	isNight: boolean;
+}
+
+export class EnvironmentLightingEngine {
+	protected readonly config: CelestialCycleConfig;
 
 	private sunGroup = new THREE.Group();
 	private sunLight!: THREE.DirectionalLight;
-	private earthshineBounceLight!: THREE.DirectionalLight;
-	private earthshineHemiLight!: THREE.HemisphereLight;
+	private bounceLight!: THREE.DirectionalLight;
+	private hemiLight!: THREE.HemisphereLight;
 	private sunCoreMat!: THREE.MeshBasicMaterial;
 	private sunCoronaMat!: THREE.SpriteMaterial;
-	private outpostLampLights: THREE.PointLight[] = [];
+	private lampLights: THREE.PointLight[] = [];
+	private elapsedSec: number;
 
-	private elapsedSec = 3.2;
+	constructor(config: Partial<CelestialCycleConfig> = {}) {
+		this.config = { ...DEFAULT_LUNAR_CELESTIAL_CONFIG, ...config };
+		this.elapsedSec = this.config.initialElapsedSec;
+	}
 
-	init(scene: THREE.Scene, lampPositions: THREE.Vector3[]) {
+	init(scene: THREE.Scene, lampPositions: THREE.Vector3[] = []) {
 		this.buildVisibleSun(scene);
 		this.setupLights(scene, lampPositions);
 		this.update(0);
@@ -55,13 +88,12 @@ export class LunarSunCycleSystem {
 		coronaSprite.scale.set(140, 140, 1);
 		this.sunGroup.add(coronaSprite);
 
-		this.sunGroup.name = 'Lunar_Sun_Body';
+		this.sunGroup.name = 'Celestial_Sun_Body';
 		scene.add(this.sunGroup);
 	}
 
 	private setupLights(scene: THREE.Scene, lampPositions: THREE.Vector3[]) {
-		// Unfiltered high-contrast solar irradiance on the Moon
-		this.sunLight = new THREE.DirectionalLight(0xfffaf0, 5.4);
+		this.sunLight = new THREE.DirectionalLight(0xfffaf0, this.config.maxSunIntensity);
 		this.sunLight.castShadow = true;
 		this.sunLight.shadow.mapSize.set(2048, 2048);
 		this.sunLight.shadow.camera.near = 180;
@@ -75,36 +107,38 @@ export class LunarSunCycleSystem {
 		scene.add(this.sunLight);
 		scene.add(this.sunLight.target);
 
-		// Secondary Earthshine directional fill so shadows & regolith stay clearly visible
-		this.earthshineBounceLight = new THREE.DirectionalLight(0x93c5fd, 1.35);
-		this.earthshineBounceLight.position.set(160, 190, 180);
-		scene.add(this.earthshineBounceLight);
+		this.bounceLight = new THREE.DirectionalLight(this.config.fillLightColorHex, 1.35);
+		this.bounceLight.position.set(160, 190, 180);
+		scene.add(this.bounceLight);
 
-		// Hemisphere sky-to-regolith bounce light
-		this.earthshineHemiLight = new THREE.HemisphereLight(0x93b4e8, 0x3b4252, 1.55);
-		scene.add(this.earthshineHemiLight);
+		this.hemiLight = new THREE.HemisphereLight(
+			this.config.hemiSkyHex,
+			this.config.hemiGroundHex,
+			1.55
+		);
+		scene.add(this.hemiLight);
 
-		// Outpost walkway lamp point lights (auto-illuminate during twilight & lunar night)
-		this.outpostLampLights = [];
+		this.lampLights = [];
 		for (const pos of lampPositions) {
-			const pt = new THREE.PointLight(0xe0f2fe, 0, 34, 1.3);
+			const pt = new THREE.PointLight(this.config.lampColorHex, 0, 34, 1.3);
 			pt.position.set(pos.x, pos.y + 4.4, pos.z);
 			scene.add(pt);
-			this.outpostLampLights.push(pt);
+			this.lampLights.push(pt);
 		}
 	}
 
-	update(dt: number, focusTarget?: THREE.Vector3): SolarCycleState {
-		this.elapsedSec = (this.elapsedSec + dt) % this.cycleDurationSec;
-		const cycleRatio = this.elapsedSec / this.cycleDurationSec;
+	update(dt: number, focusTarget?: THREE.Vector3): CelestialCycleSnapshot {
+		const { cycleDurationSec, orbitRadius, maxSunIntensity, lampMaxIntensity } = this.config;
+
+		this.elapsedSec = (this.elapsedSec + dt) % cycleDurationSec;
+		const cycleRatio = this.elapsedSec / cycleDurationSec;
 		const theta = cycleRatio * Math.PI * 2;
 
-		// Tilted South Pole solar arc: ~16s bright Lunar Day, ~6s illuminated Lunar Night
 		const sinElev = Math.sin(theta);
 		const horizontalCos = Math.cos(theta);
-		const sx = horizontalCos * this.orbitRadius;
-		const sy = sinElev * (this.orbitRadius * 0.62) + this.orbitRadius * 0.22;
-		const sz = Math.sin(theta * 0.5) * (this.orbitRadius * 0.35) - 90;
+		const sx = horizontalCos * orbitRadius;
+		const sy = sinElev * (orbitRadius * 0.62) + orbitRadius * 0.22;
+		const sz = Math.sin(theta * 0.5) * (orbitRadius * 0.35) - 90;
 
 		this.sunGroup.position.set(sx, sy, sz);
 		this.sunLight.position.set(sx, sy, sz);
@@ -119,24 +153,22 @@ export class LunarSunCycleSystem {
 		const dayFactor = THREE.MathUtils.smoothstep(elevationDeg, -5, 10);
 		const horizonWarmth = 1 - Math.min(1, Math.abs(elevationDeg - 2) / 14);
 
-		this.sunLight.intensity = dayFactor * 5.4;
+		this.sunLight.intensity = dayFactor * maxSunIntensity;
 		this.sunLight.color.setRGB(1.0, 0.97 - horizonWarmth * 0.14, 0.92 - horizonWarmth * 0.24);
 
 		this.sunCoreMat.color.copy(this.sunLight.color);
 		this.sunCoronaMat.opacity = THREE.MathUtils.smoothstep(elevationDeg, -8, 4) * 0.95;
 
-		// Keep Earthshine strong so terrain contours are always legible even at night,
-		// while slightly dimming ambient fill at night so skyward mission beacons stand out clearly
-		this.earthshineHemiLight.intensity = THREE.MathUtils.lerp(1.05, 1.65, dayFactor);
-		this.earthshineBounceLight.intensity = THREE.MathUtils.lerp(1.05, 1.45, dayFactor);
+		this.hemiLight.intensity = THREE.MathUtils.lerp(1.05, 1.65, dayFactor);
+		this.bounceLight.intensity = THREE.MathUtils.lerp(1.05, 1.45, dayFactor);
 
-		const lampIntensity = (1 - dayFactor) * 32.0;
-		for (const lamp of this.outpostLampLights) {
+		const lampIntensity = (1 - dayFactor) * lampMaxIntensity;
+		for (const lamp of this.lampLights) {
 			lamp.intensity = lampIntensity;
 		}
 
 		const isNight = elevationDeg < -2;
-		const phaseLabel: SolarCycleState['phaseLabel'] =
+		const phaseLabel: CelestialCycleSnapshot['phaseLabel'] =
 			elevationDeg > 6 ? 'Lunar Day' : elevationDeg >= -2 ? 'Crater Twilight' : 'Lunar Night';
 
 		return {

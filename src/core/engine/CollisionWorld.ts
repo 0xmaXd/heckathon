@@ -1,5 +1,32 @@
 import * as THREE from 'three';
 
+export interface SurfaceHit {
+	y: number;
+	normal: THREE.Vector3;
+	surfaceType?: string;
+}
+
+export interface SurfaceProvider {
+	sampleSurfaceAt(x: number, z: number): SurfaceHit;
+}
+
+export class FlatSurfaceProvider implements SurfaceProvider {
+	private readonly floorY: number;
+	private readonly up = new THREE.Vector3(0, 1, 0);
+
+	constructor(floorY = 0) {
+		this.floorY = floorY;
+	}
+
+	sampleSurfaceAt(_x: number, _z: number): SurfaceHit {
+		return {
+			y: this.floorY,
+			normal: this.up,
+			surfaceType: 'Standard_Floor'
+		};
+	}
+}
+
 export interface CylinderCollider {
 	kind: 'cylinder';
 	name: string;
@@ -25,57 +52,35 @@ export interface ObbCollider {
 	dynamic?: () => boolean;
 }
 
-export type OutpostCollider = CylinderCollider | ObbCollider;
+export type WorldCollider = CylinderCollider | ObbCollider;
 
-const CYLINDER_KEYWORDS = [
-	'Dome_Habitat_Shell',
-	'Cabin_Module_Body',
-	'Water_Tank_',
-	'Command_Tower_Base',
-	'Command_Tower_Shaft',
-	'Comm_Dish_Pedestal_',
-	'Storage_Pod_Base',
-	'Fission_Reactor_Core',
-	'Ice_Cryo_Storage_Tank',
-	'Ice_Drill_Borehole_Collar',
-	'Ice_Drill_Auger',
-	'Solar_Mast_',
-	'Outpost_Lamp_Pole_',
-	'NASA_Flag_Pole'
-];
+export interface DynamicPropCollider {
+	object: THREE.Object3D;
+	collider: ObbCollider;
+	halfHeight: number;
+}
 
-const EXCLUDED_KEYWORDS = [
-	'Orion_LOLA_Crater_Terrain',
-	'Corridor_',
-	'_Pad',
-	'_Apron',
-	'_Disc',
-	'_HazardRing',
-	'_NASALogo',
-	'_Walkway',
-	'_Foundation',
-	'_Deck',
-	'Terrace_Stair_Step',
-	'Label_',
-	'Solar_Dust_Layer_',
-	'Sample_Metal_',
-	'Sample_NonMetal_',
-	'Beacon',
-	'Ring',
-	'Wires_',
-	'Hose',
-	'Orion_Moon_Rover',
-	'Rover_',
-	'Supply_Crate_'
-];
+export interface CollisionMeshFilter {
+	cylinderKeywords?: string[];
+	excludedKeywords?: string[];
+	dynamicPredicates?: Record<string, () => boolean>;
+	minHeightThreshold?: number;
+}
 
-export class OutpostCollisionSystem {
-	private staticColliders: OutpostCollider[] = [];
-	private crateColliders: { crate: THREE.Object3D; collider: ObbCollider }[] = [];
-	private scratchCratePos = new THREE.Vector3();
-	private roverCollider: ObbCollider = {
+export interface CollisionQueryOptions {
+	vehicleObj?: THREE.Object3D | null;
+	includeVehicle?: boolean;
+	ignoredObject?: THREE.Object3D | null;
+}
+
+export class CollisionWorld {
+	protected staticColliders: WorldCollider[] = [];
+	protected propColliders: DynamicPropCollider[] = [];
+	private scratchPropPos = new THREE.Vector3();
+
+	private vehicleCollider: ObbCollider = {
 		kind: 'obb',
-		name: 'Orion_Moon_Rover_Body',
+		name: 'Active_Vehicle_Body',
 		x: 0,
 		z: 0,
 		hx: 1.12,
@@ -86,10 +91,42 @@ export class OutpostCollisionSystem {
 		maxY: 10
 	};
 
-	buildFromRoot(root: THREE.Object3D, crates: THREE.Object3D[], isAirlockOpen: () => boolean) {
+	clear() {
 		this.staticColliders = [];
-		this.crateColliders = [];
+		this.propColliders = [];
+	}
+
+	addStaticCollider(collider: WorldCollider) {
+		this.staticColliders.push(collider);
+	}
+
+	registerDynamicProps(objects: THREE.Object3D[], halfExtent = 0.48, halfHeight = 0.45) {
+		this.propColliders = objects.map((obj) => ({
+			object: obj,
+			halfHeight,
+			collider: {
+				kind: 'obb',
+				name: obj.name,
+				x: obj.position.x,
+				z: obj.position.z,
+				hx: halfExtent,
+				hz: halfExtent,
+				cosYaw: Math.cos(obj.rotation.y),
+				sinYaw: Math.sin(obj.rotation.y),
+				minY: obj.position.y - halfHeight,
+				maxY: obj.position.y + halfHeight
+			}
+		}));
+	}
+
+	buildFromSceneRoot(root: THREE.Object3D, filter: CollisionMeshFilter = {}) {
+		this.staticColliders = [];
 		root.updateMatrixWorld(true);
+
+		const cylinderKeywords = filter.cylinderKeywords ?? [];
+		const excludedKeywords = filter.excludedKeywords ?? [];
+		const dynamicPredicates = filter.dynamicPredicates ?? {};
+		const minHeightThreshold = filter.minHeightThreshold ?? 0.35;
 
 		const localBox = new THREE.Box3();
 		const corner = new THREE.Vector3();
@@ -102,13 +139,12 @@ export class OutpostCollisionSystem {
 			if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
 			const name = obj.name;
 
-			if (EXCLUDED_KEYWORDS.some((kw) => name.includes(kw))) return;
+			if (excludedKeywords.some((kw) => name.includes(kw))) return;
 
 			obj.geometry.computeBoundingBox();
 			if (!obj.geometry.boundingBox) return;
 			localBox.copy(obj.geometry.boundingBox);
 
-			// Compute exact world AABB minY/maxY across all 8 corners
 			let minY = Infinity;
 			let maxY = -Infinity;
 			let minX = Infinity;
@@ -135,17 +171,16 @@ export class OutpostCollisionSystem {
 				}
 			}
 
-			// Skip flat ground plates
-			if (maxY - minY < 0.35) return;
+			if (maxY - minY < minHeightThreshold) return;
 
 			obj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
 			euler.setFromQuaternion(worldQuat, 'YXZ');
 
 			const centerX = (minX + maxX) * 0.5;
 			const centerZ = (minZ + maxZ) * 0.5;
-			const isAirlockDoor = name === 'Airlock_Outer_Door';
+			const dynamicFn = dynamicPredicates[name];
 
-			if (CYLINDER_KEYWORDS.some((kw) => name.includes(kw))) {
+			if (cylinderKeywords.some((kw) => name.includes(kw))) {
 				const radius = Math.max(maxX - minX, maxZ - minZ) * 0.5;
 				if (radius >= 0.05) {
 					this.staticColliders.push({
@@ -155,13 +190,13 @@ export class OutpostCollisionSystem {
 						z: centerZ,
 						radius,
 						minY,
-						maxY
+						maxY,
+						dynamic: dynamicFn
 					});
 				}
 				return;
 			}
 
-			// Compute oriented half-extents in XZ plane
 			const hx = Math.abs(localBox.max.x - localBox.min.x) * 0.5 * Math.abs(worldScale.x);
 			const hz = Math.abs(localBox.max.z - localBox.min.z) * 0.5 * Math.abs(worldScale.z);
 			if (hx < 0.05 || hz < 0.05) return;
@@ -177,57 +212,32 @@ export class OutpostCollisionSystem {
 				sinYaw: Math.sin(euler.y),
 				minY,
 				maxY,
-				dynamic: isAirlockDoor ? () => !isAirlockOpen() : undefined
+				dynamic: dynamicFn
 			});
 		});
-
-		// Dynamic colliders for movable Supply Crates
-		for (const crate of crates) {
-			this.crateColliders.push({
-				crate,
-				collider: {
-					kind: 'obb',
-					name: crate.name,
-					x: crate.position.x,
-					z: crate.position.z,
-					hx: 0.48,
-					hz: 0.48,
-					cosYaw: Math.cos(crate.rotation.y),
-					sinYaw: Math.sin(crate.rotation.y),
-					minY: crate.position.y - 0.5,
-					maxY: crate.position.y + 0.5
-				}
-			});
-		}
 	}
 
 	resolveHorizontal(
 		pos: THREE.Vector3,
 		radius: number,
 		entityHeight: number,
-		options?: {
-			roverObj?: THREE.Object3D | null;
-			includeRover?: boolean;
-			ignoredCrate?: THREE.Object3D | null;
-		}
+		options?: CollisionQueryOptions
 	) {
 		const entMinY = pos.y + 0.18;
 		const entMaxY = pos.y + entityHeight;
 
-		// Update dynamic Rover collider when Astronaut is on foot
-		let activeRoverCollider: ObbCollider | null = null;
-		if (options?.includeRover && options.roverObj) {
-			const r = options.roverObj;
-			this.roverCollider.x = r.position.x;
-			this.roverCollider.z = r.position.z;
-			this.roverCollider.cosYaw = Math.cos(r.rotation.y);
-			this.roverCollider.sinYaw = Math.sin(r.rotation.y);
-			this.roverCollider.minY = r.position.y - 0.6;
-			this.roverCollider.maxY = r.position.y + 1.6;
-			activeRoverCollider = this.roverCollider;
+		let activeVehicleCollider: ObbCollider | null = null;
+		if (options?.includeVehicle && options.vehicleObj) {
+			const v = options.vehicleObj;
+			this.vehicleCollider.x = v.position.x;
+			this.vehicleCollider.z = v.position.z;
+			this.vehicleCollider.cosYaw = Math.cos(v.rotation.y);
+			this.vehicleCollider.sinYaw = Math.sin(v.rotation.y);
+			this.vehicleCollider.minY = v.position.y - 0.6;
+			this.vehicleCollider.maxY = v.position.y + 1.6;
+			activeVehicleCollider = this.vehicleCollider;
 		}
 
-		// 3 solver iterations ensure smooth wall-sliding in corners
 		for (let iter = 0; iter < 3; iter++) {
 			for (const col of this.staticColliders) {
 				if (col.dynamic && !col.dynamic()) continue;
@@ -235,32 +245,31 @@ export class OutpostCollisionSystem {
 				this.pushOutOfCollider(pos, radius, col);
 			}
 
-			for (const entry of this.crateColliders) {
-				if (entry.crate === options?.ignoredCrate) continue;
-				// Skip crates currently attached to Astronaut or Rover cargo rack
+			for (const entry of this.propColliders) {
+				if (entry.object === options?.ignoredObject) continue;
 				if (
-					entry.crate.parent &&
-					entry.crate.parent.name !== 'Scene' &&
-					entry.crate.parent.type !== 'Scene'
+					entry.object.parent &&
+					entry.object.parent.name !== 'Scene' &&
+					entry.object.parent.type !== 'Scene'
 				) {
 					continue;
 				}
-				entry.crate.getWorldPosition(this.scratchCratePos);
-				entry.collider.x = this.scratchCratePos.x;
-				entry.collider.z = this.scratchCratePos.z;
-				entry.collider.minY = this.scratchCratePos.y - 0.45;
-				entry.collider.maxY = this.scratchCratePos.y + 0.45;
+				entry.object.getWorldPosition(this.scratchPropPos);
+				entry.collider.x = this.scratchPropPos.x;
+				entry.collider.z = this.scratchPropPos.z;
+				entry.collider.minY = this.scratchPropPos.y - entry.halfHeight;
+				entry.collider.maxY = this.scratchPropPos.y + entry.halfHeight;
 				if (entMaxY < entry.collider.minY || entMinY > entry.collider.maxY) continue;
 				this.pushOutOfCollider(pos, radius, entry.collider);
 			}
 
-			if (activeRoverCollider) {
-				this.pushOutOfCollider(pos, radius, activeRoverCollider);
+			if (activeVehicleCollider) {
+				this.pushOutOfCollider(pos, radius, activeVehicleCollider);
 			}
 		}
 	}
 
-	private pushOutOfCollider(pos: THREE.Vector3, radius: number, col: OutpostCollider) {
+	private pushOutOfCollider(pos: THREE.Vector3, radius: number, col: WorldCollider) {
 		if (col.kind === 'cylinder') {
 			const dx = pos.x - col.x;
 			const dz = pos.z - col.z;
@@ -279,7 +288,6 @@ export class OutpostCollisionSystem {
 			return;
 		}
 
-		// Circle vs. Oriented Bounding Box (OBB)
 		const dx = pos.x - col.x;
 		const dz = pos.z - col.z;
 		const lx = dx * col.cosYaw - dz * col.sinYaw;

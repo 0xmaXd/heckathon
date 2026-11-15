@@ -12,6 +12,7 @@ export interface CameraPreset {
 
 export interface SceneFrameFeedback {
 	orbitTargetY?: number;
+	orbitTarget?: [number, number, number];
 	shakeIntensity?: number;
 }
 
@@ -22,12 +23,6 @@ export interface GameScene {
 	onEnter?(): void;
 	onExit?(): void;
 	update?(delta: number): SceneFrameFeedback | void;
-}
-
-export interface SceneFrameFeedback {
-	orbitTargetY?: number;
-	orbitTarget?: [number, number, number];
-	shakeIntensity?: number;
 }
 
 export interface CameraController {

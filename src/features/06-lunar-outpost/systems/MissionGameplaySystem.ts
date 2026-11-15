@@ -1,450 +1,513 @@
 import * as THREE from 'three';
+import type {
+	CargoZoneProvider,
+	DropOffZoneMatch
+} from '../../../core/player/PlayerController.svelte';
 import { LunarOutpostConfig } from '../lunar-outpost.config';
-import hudCopy from '../lunar-outpost.hud.json';
-import type {
-	DiscoveryCardData,
-	OutpostHudSnapshot,
-	OutpostPhase,
-	RoverHudState,
-	SolarCycleState
-} from '../lunar-outpost.types';
-import type { AstronautController } from './AstronautController';
-import type { OrionRoverSystem } from './OrionRoverSystem';
-import type { OutpostMachinerySystem } from './OutpostMachinerySystem';
-import type {
-	OutpostWorldBuilder,
-	SkywardWaypointTarget,
-	WorldDropOffZone
-} from './OutpostWorldBuilder';
+import type { DiscoveryCardData, DropOffZoneId, OutpostPhase } from '../lunar-outpost.types';
+import { outpostEventBus } from './OutpostEventBus';
+import type { OutpostWorldBuilder, WorldDropOffZoneEntry } from './OutpostWorldBuilder';
 
-export class MissionGameplaySystem {
+export interface DropOffZoneRuntime extends DropOffZoneMatch, WorldDropOffZoneEntry {
+	id: DropOffZoneId;
+	label: string;
+	shortHint: string;
+	delivered: boolean;
+	deliveredCrateName: string | null;
+	ringMesh: THREE.Mesh;
+	beaconMesh: THREE.Mesh;
+}
+
+export interface MissionPromptHint {
+	key: 'E' | 'F';
+	label: string;
+}
+
+export interface MissionUpdateContext {
+	isSeated: boolean;
+	carryingCrateName: string | null;
+	roverLoadedCrateName: string | null;
+}
+
+interface SampleNodeRuntime {
+	card: DiscoveryCardData;
+	object: THREE.Object3D;
+}
+
+const MINERAL_MATERIAL_SPECS: Record<
+	string,
+	{ color: number; metalness: number; roughness: number; emissive: number }
+> = {
+	titanium: { color: 0x1b1f2a, metalness: 0.85, roughness: 0.28, emissive: 0x1e293b },
+	iron: { color: 0x6e737b, metalness: 0.9, roughness: 0.32, emissive: 0x334155 },
+	aluminum: { color: 0xdde2ea, metalness: 0.65, roughness: 0.35, emissive: 0x475569 },
+	oxygen: { color: 0x9c4a32, metalness: 0.18, roughness: 0.72, emissive: 0x451a03 },
+	silicon: { color: 0xb99345, metalness: 0.45, roughness: 0.3, emissive: 0x422006 },
+	water_ice: { color: 0x6ec8e8, metalness: 0.1, roughness: 0.18, emissive: 0x0c4a6e }
+};
+
+export class MissionGameplaySystem implements CargoZoneProvider {
 	public phase: OutpostPhase = 'briefing';
+	public crates: THREE.Object3D[] = [];
+	public dropOffZones: DropOffZoneRuntime[] = [];
+	public samples: DiscoveryCardData[] = [];
 	public activeDiscoveryCard: DiscoveryCardData | null = null;
+	public scannerPowerPct = 100;
+	public dustyPanelsRemaining = 0;
 
-	private samples: DiscoveryCardData[] = structuredClone(LunarOutpostConfig.discoveryCards);
-	private cratesDelivered = 0;
-	private speaker: OutpostHudSnapshot['speaker'] = 'Commander Maya';
-	private dialogue = hudCopy.briefing.dialogue;
-	private maintenanceActive = false;
-	private maintenanceTriggeredOnce = false;
-	private launchSequenceTimer = 0;
-	private elapsedSec = 0;
+	private sampleNodes: SampleNodeRuntime[] = [];
+	private dustyPanels: THREE.Object3D[] = [];
+	private geologyConsole: THREE.Object3D | null = null;
+	private launchPad: THREE.Object3D | null = null;
+	private orionLander: THREE.Object3D | null = null;
+	private landerRestPos = new THREE.Vector3(46, 0.89, -52);
+	private crateInitialTransforms: {
+		obj: THREE.Object3D;
+		pos: THREE.Vector3;
+		quat: THREE.Quaternion;
+	}[] = [];
 
-	dismissDiscoveryCard() {
+	init(scene: THREE.Scene, world: OutpostWorldBuilder): void {
+		this.crates = [];
+		this.crateInitialTransforms = [];
+		this.dropOffZones = [];
+		world.dropOffZones.length = 0;
+		this.sampleNodes = [];
+		this.dustyPanels = [];
 		this.activeDiscoveryCard = null;
+		this.phase = 'briefing';
+
+		this.samples = LunarOutpostConfig.discoveryCards.map((c) => ({
+			...c,
+			collected: false,
+			analyzed: false
+		}));
+
+		const consoleMatches: THREE.Object3D[] = [];
+		const padMatches: THREE.Object3D[] = [];
+		const landerMatches: THREE.Object3D[] = [];
+
+		world.outpostRoot?.traverse((obj) => {
+			if (/Supply_Crate/i.test(obj.name) && obj.parent === world.outpostRoot) {
+				this.crates.push(obj);
+			} else if (/Solar_Dust_Layer/i.test(obj.name)) {
+				this.dustyPanels.push(obj);
+			} else if (/Geology_Workstation_Console/i.test(obj.name)) {
+				consoleMatches.push(obj);
+			} else if (/Orion_Landing_Pad/i.test(obj.name)) {
+				padMatches.push(obj);
+			} else if (/OrionLander|Orion_Lander/i.test(obj.name)) {
+				landerMatches.push(obj);
+			}
+		});
+
+		this.geologyConsole = consoleMatches[0] ?? null;
+		this.launchPad = padMatches[0] ?? null;
+		this.orionLander = landerMatches[0] ?? null;
+
+		if (this.crates.length === 0) {
+			const crateMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.45 });
+			for (let i = 0; i < 6; i++) {
+				const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.65, 0.75), crateMat);
+				mesh.name = `Supply_Crate_0${i + 1}`;
+				const x = 6 + (i % 3) * 1.6;
+				const z = -22 + Math.floor(i / 3) * 1.6;
+				const y = world.getGroundHeight(x, z) + 0.35;
+				mesh.position.set(x, y, z);
+				mesh.castShadow = true;
+				scene.add(mesh);
+				this.crates.push(mesh);
+			}
+		}
+
+		for (const crate of this.crates) {
+			this.crateInitialTransforms.push({
+				obj: crate,
+				pos: crate.position.clone(),
+				quat: crate.quaternion.clone()
+			});
+		}
+
+		for (const def of LunarOutpostConfig.dropOffZoneDefinitions) {
+			const targetNode = world.findObjectByPatterns(def.nodePatterns);
+			const pos = new THREE.Vector3(...def.fallbackPos);
+			if (targetNode) {
+				targetNode.getWorldPosition(pos);
+				pos.z += def.offsetDistance;
+			}
+			pos.y = world.getGroundHeight(pos.x, pos.z);
+
+			const ringMesh = new THREE.Mesh(
+				new THREE.RingGeometry(1.45, 1.85, 32),
+				new THREE.MeshBasicMaterial({
+					color: 0xfbbf24,
+					side: THREE.DoubleSide,
+					transparent: true,
+					opacity: 0.75
+				})
+			);
+			ringMesh.rotation.x = -Math.PI / 2;
+			ringMesh.position.set(pos.x, pos.y + 0.05, pos.z);
+			ringMesh.name = `DropOff_Ring_${def.id}`;
+			scene.add(ringMesh);
+
+			const zoneEntry: DropOffZoneRuntime = {
+				id: def.id,
+				label: def.label,
+				shortHint: def.shortHint,
+				position: pos,
+				delivered: false,
+				deliveredCrateName: null,
+				ringMesh,
+				beaconMesh: ringMesh
+			};
+
+			this.dropOffZones.push(zoneEntry);
+			world.dropOffZones.push(zoneEntry);
+		}
+
+		for (const card of this.samples) {
+			const node = world.outpostRoot?.getObjectByName(card.nodeName) ?? null;
+			if (node) {
+				this.applyMineralAppearance(node, card.id, false, 0.2);
+				this.sampleNodes.push({ card, object: node });
+			}
+		}
+
+		if (this.orionLander) {
+			this.landerRestPos.copy(this.orionLander.position);
+		}
+		this.dustyPanelsRemaining = this.dustyPanels.filter((p) => p.visible).length;
 	}
 
-	startResupplyMission() {
+	resetMission(scene: THREE.Scene, world: OutpostWorldBuilder): void {
+		this.phase = 'briefing';
+		this.activeDiscoveryCard = null;
+
+		for (const item of this.crateInitialTransforms) {
+			scene.attach(item.obj);
+			item.obj.position.copy(item.pos);
+			item.obj.quaternion.copy(item.quat);
+			item.obj.userData.delivered = false;
+			item.obj.visible = true;
+		}
+
+		for (const zone of this.dropOffZones) {
+			zone.delivered = false;
+			zone.deliveredCrateName = null;
+			(zone.ringMesh.material as THREE.MeshBasicMaterial).color.setHex(0xfbbf24);
+		}
+
+		for (const card of this.samples) {
+			card.collected = false;
+			card.analyzed = false;
+		}
+		for (const entry of this.sampleNodes) {
+			entry.object.visible = true;
+			this.applyMineralAppearance(entry.object, entry.card.id, false, 0.2);
+		}
+
+		for (const dust of this.dustyPanels) {
+			dust.visible = true;
+		}
+		this.dustyPanelsRemaining = this.dustyPanels.length;
+		this.scannerPowerPct = 100;
+
+		if (this.orionLander) {
+			const padY = world.getGroundHeight(this.landerRestPos.x, this.landerRestPos.z);
+			this.orionLander.position.set(this.landerRestPos.x, padY, this.landerRestPos.z);
+			this.orionLander.visible = true;
+		}
+	}
+
+	findDropOffZoneNear(
+		pos: THREE.Vector3,
+		radius = LunarOutpostConfig.physics.crateDeliverRadius,
+		onlyUndelivered = true
+	): DropOffZoneRuntime | null {
+		let best: DropOffZoneRuntime | null = null;
+		let bestDist = radius;
+		for (const zone of this.dropOffZones) {
+			if (onlyUndelivered && zone.delivered) continue;
+			const d = Math.hypot(pos.x - zone.position.x, pos.z - zone.position.z);
+			if (d <= bestDist) {
+				bestDist = d;
+				best = zone;
+			}
+		}
+		return best;
+	}
+
+	beginResupply(): void {
 		if (this.phase === 'briefing') {
 			this.phase = 'resupply';
-			this.speaker = 'Commander Maya';
-			this.dialogue =
-				'Orders active! Pick up any supply box [F] (or stick 1 box onto the back of the Rover) and drop 1 box at each of the 5 stations: Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock.';
+			outpostEventBus.emit('mission:phaseChanged', { phase: this.phase });
 		}
 	}
 
-	/** Handles primary [E] contextual action (outside Rover boarding) */
-	handleContextInteract(
-		actorPos: THREE.Vector3,
-		_scene: THREE.Scene,
-		world: OutpostWorldBuilder,
-		machinery: OutpostMachinerySystem
-	): boolean {
-		// 1. Clean dusty solar panels if near one
-		if (machinery.cleanNearbySolarPanel(actorPos)) {
-			const remaining = machinery.getDustyPanelCount();
-			if (remaining === 0 && this.maintenanceActive) {
-				this.maintenanceActive = false;
-				this.speaker = 'Geologist Leo';
-				this.dialogue =
-					'Solar Array is back at 100% output! Your Geology Scanner is fully powered again.';
+	tryContextInteract(playerPos: THREE.Vector3): string | null {
+		for (const dust of this.dustyPanels) {
+			if (!dust.visible) continue;
+			const wp = new THREE.Vector3();
+			dust.getWorldPosition(wp);
+			if (wp.distanceTo(playerPos) <= LunarOutpostConfig.physics.interactionRadius) {
+				dust.visible = false;
+				this.dustyPanelsRemaining = this.dustyPanels.filter((p) => p.visible).length;
+				this.scannerPowerPct = Math.min(100, this.scannerPowerPct + 25);
+				return 'Solar panel wiped clean! Scanner power restored.';
 			}
-			return true;
 		}
 
-		// 2. Collect nearby geological sample (when in exploration phase)
-		if (this.phase === 'exploration') {
-			const samplePos = new THREE.Vector3();
-			for (const sample of this.samples) {
-				if (sample.collected) continue;
-				const node = world.sampleNodes.get(sample.nodeName);
-				if (!node) continue;
-				node.getWorldPosition(samplePos);
-
-				if (actorPos.distanceTo(samplePos) <= LunarOutpostConfig.physics.interactionRadius + 1.2) {
-					sample.collected = true;
-					node.visible = false;
-					const beacon = world.sampleBeacons.get(sample.nodeName);
-					if (beacon) beacon.visible = false;
-
-					this.speaker = 'Geologist Leo';
-					this.dialogue = `Collected ${sample.title} (${sample.category})! Bring it back to the ISS-inspired Geology Lab to run spectrometer analysis.`;
-					return true;
+		for (const entry of this.sampleNodes) {
+			if (entry.card.collected) continue;
+			const wp = new THREE.Vector3();
+			entry.object.getWorldPosition(wp);
+			if (wp.distanceTo(playerPos) <= LunarOutpostConfig.physics.interactionRadius) {
+				entry.card.collected = true;
+				this.applyMineralAppearance(entry.object, entry.card.id, true, 0.55);
+				outpostEventBus.emit('sample:collected', {
+					nodeName: entry.card.nodeName,
+					title: entry.card.title
+				});
+				if (this.phase === 'briefing' || this.phase === 'resupply') {
+					this.phase = 'exploration';
+					outpostEventBus.emit('mission:phaseChanged', { phase: this.phase });
 				}
+				return `Scanned ${entry.card.title} (${entry.card.formula})! Bring data to Geology Lab.`;
 			}
+		}
 
-			// 3. Analyze collected samples at the Geology Workstation
-			if (
-				actorPos.distanceTo(world.workstationPos) <= LunarOutpostConfig.physics.workstationRadius
-			) {
+		if (this.geologyConsole) {
+			const labPos = new THREE.Vector3();
+			this.geologyConsole.getWorldPosition(labPos);
+			if (labPos.distanceTo(playerPos) <= LunarOutpostConfig.physics.workstationRadius) {
 				const pending = this.samples.find((s) => s.collected && !s.analyzed);
 				if (pending) {
 					pending.analyzed = true;
 					this.activeDiscoveryCard = pending;
-					this.speaker = 'Geologist Leo';
-					this.dialogue = `Verified ${pending.title}! Discovery card unlocked.`;
-
 					const analyzedCount = this.samples.filter((s) => s.analyzed).length;
-					if (analyzedCount === 3 && !this.maintenanceTriggeredOnce) {
-						this.maintenanceTriggeredOnce = true;
-						this.maintenanceActive = true;
-						machinery.triggerDustStorm(6);
-						this.speaker = 'Geologist Leo';
-						this.dialogue = hudCopy.maintenanceAlert.message;
-					} else if (analyzedCount === this.samples.length) {
+					outpostEventBus.emit('sample:analyzed', {
+						nodeName: pending.nodeName,
+						title: pending.title,
+						analyzedCount
+					});
+					if (this.samples.every((s) => s.analyzed)) {
 						this.phase = 'finale_ready';
-						this.speaker = 'Commander Maya';
-						this.dialogue = hudCopy.finaleReady.dialogue;
+						outpostEventBus.emit('mission:phaseChanged', { phase: this.phase });
 					}
-					return true;
+					return `Verified ${pending.title} at Geology Lab!`;
 				}
 			}
 		}
 
-		// 4. Trigger Sample Return Launch at the Orion Landing Pad
-		if (
-			this.phase === 'finale_ready' &&
-			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
-		) {
-			this.phase = 'launched';
-			this.launchSequenceTimer = 0.01;
-			if (world.landerAscentPlume) {
-				world.landerAscentPlume.visible = true;
+		if (this.phase === 'finale_ready' && this.launchPad) {
+			const padPos = new THREE.Vector3();
+			this.launchPad.getWorldPosition(padPos);
+			if (padPos.distanceTo(playerPos) <= LunarOutpostConfig.physics.launchPadRadius) {
+				this.phase = 'launched';
+				outpostEventBus.emit('mission:phaseChanged', { phase: this.phase });
+				return 'Orion Sample Return Ascent Stage launched!';
 			}
-			this.speaker = 'Mission Control';
-			this.dialogue =
-				'Ignition confirmed! Sample Return Vehicle ascending from Orion Moon Outpost back to Earth!';
-			return true;
 		}
 
-		// 5. Toggle Airlock door
-		if (machinery.isNearAirlock(actorPos)) {
-			return machinery.toggleAirlockDoor();
-		}
-
-		return false;
-	}
-
-	private completeDropOffAtZone(
-		zone: WorldDropOffZone,
-		crate: THREE.Object3D,
-		scene: THREE.Scene,
-		world: OutpostWorldBuilder
-	) {
-		scene.attach(crate);
-		const hit = world.sampleSurfaceAt(zone.position.x, zone.position.z);
-		crate.position.set(zone.position.x, hit.y + 0.39, zone.position.z);
-		crate.rotation.set(0, 0, 0);
-		crate.userData.delivered = true;
-		crate.userData.deliveredZoneId = zone.id;
-
-		zone.delivered = true;
-		zone.deliveredCrateName = crate.name;
-		zone.beaconMesh.visible = false;
-		(zone.ringMesh.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
-
-		this.cratesDelivered = world.dropOffZones.filter((z) => z.delivered).length;
-
-		if (this.cratesDelivered >= LunarOutpostConfig.resupplyRequiredCount) {
-			this.phase = 'exploration';
-			this.speaker = 'Geologist Leo';
-			this.dialogue = hudCopy.explorationStart.dialogue;
-		} else {
-			const remainingNames = world.dropOffZones
-				.filter((z) => !z.delivered)
-				.map((z) => z.label)
-				.join(', ');
-			this.speaker = 'Commander Maya';
-			this.dialogue = `Box delivered to ${zone.label} (${this.cratesDelivered}/${LunarOutpostConfig.resupplyRequiredCount})! Remaining drop-offs: ${remainingNames}.`;
-		}
+		return null;
 	}
 
 	update(
 		dt: number,
-		scene: THREE.Scene,
-		world: OutpostWorldBuilder,
-		astronaut: AstronautController,
-		rover: OrionRoverSystem,
-		machinery: OutpostMachinerySystem,
-		roverState: RoverHudState,
-		solar: SolarCycleState,
-		isPointerLocked: boolean
-	): OutpostHudSnapshot {
-		this.elapsedSec += dt;
-		const actorPos = rover.isSeated && rover.rover ? rover.rover.position : astronaut.root.position;
-
-		// Auto-activate resupply phase if player picks up a crate or boards the rover directly
-		if (
-			this.phase === 'briefing' &&
-			(astronaut.carryingCrate !== null || rover.loadedCrate !== null || rover.isSeated)
-		) {
-			this.startResupplyMission();
+		playerPos: THREE.Vector3,
+		roverObj: THREE.Object3D | null,
+		context?: MissionUpdateContext
+	): MissionPromptHint | null {
+		const crateWorld = new THREE.Vector3();
+		for (const zone of this.dropOffZones) {
+			if (zone.delivered) continue;
+			for (const crate of this.crates) {
+				if (crate.userData?.delivered) continue;
+				if (roverObj && crate.parent) {
+					let isMountedOnRover = false;
+					crate.traverseAncestors((anc) => {
+						if (anc === roverObj) isMountedOnRover = true;
+					});
+					if (isMountedOnRover) continue;
+				}
+				crate.getWorldPosition(crateWorld);
+				const dist = Math.hypot(crateWorld.x - zone.position.x, crateWorld.z - zone.position.z);
+				if (dist <= 2.4) {
+					crate.userData.delivered = true;
+					zone.delivered = true;
+					zone.deliveredCrateName = crate.name;
+					(zone.ringMesh.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
+					if (this.phase === 'briefing') this.phase = 'resupply';
+					const deliveredCount = this.dropOffZones.filter((z) => z.delivered).length;
+					outpostEventBus.emit('crate:delivered', {
+						zoneId: zone.id,
+						crateName: crate.name,
+						deliveredCount
+					});
+					break;
+				}
+			}
 		}
 
-		// Any box can be taken anywhere, and dropping it off inside a designated zone completes that delivery
-		if (this.phase === 'briefing' || this.phase === 'resupply') {
-			const cratePos = new THREE.Vector3();
-			for (const crate of world.supplyCrates) {
-				if (crate.userData?.delivered) continue;
-				// Must be landed on the ground (not held by astronaut, stuck to rover, or mid-fall)
-				if (
-					crate === astronaut.carryingCrate ||
-					crate === rover.loadedCrate ||
-					rover.isCrateFalling(crate)
-				) {
-					continue;
-				}
+		if (
+			(this.phase === 'briefing' || this.phase === 'resupply') &&
+			this.dropOffZones.every((z) => z.delivered)
+		) {
+			this.phase = 'exploration';
+			outpostEventBus.emit('mission:phaseChanged', { phase: this.phase });
+		}
 
-				crate.getWorldPosition(cratePos);
-				const targetZone = world.findDropOffZoneNear(
-					cratePos,
+		const samplePos = new THREE.Vector3();
+		for (const entry of this.sampleNodes) {
+			if (entry.card.collected) continue;
+			entry.object.getWorldPosition(samplePos);
+			const playerDist = playerPos.distanceTo(samplePos);
+			const roverDist = roverObj ? roverObj.position.distanceTo(samplePos) : Infinity;
+			const near = Math.min(playerDist, roverDist) <= 12.0;
+			this.applyMineralAppearance(entry.object, entry.card.id, false, near ? 0.45 : 0.2);
+		}
+
+		if (this.phase === 'launched' && this.orionLander) {
+			this.orionLander.position.y = Math.min(
+				this.landerRestPos.y + 180,
+				this.orionLander.position.y + 18 * dt
+			);
+		}
+
+		return this.computeContextPrompt(playerPos, roverObj, context);
+	}
+
+	private computeContextPrompt(
+		playerPos: THREE.Vector3,
+		roverObj: THREE.Object3D | null,
+		context?: MissionUpdateContext
+	): MissionPromptHint | null {
+		const isSeated = context?.isSeated ?? false;
+		const carryingCrateName = context?.carryingCrateName ?? null;
+		const roverLoadedCrateName = context?.roverLoadedCrateName ?? null;
+
+		if (isSeated && roverObj) {
+			if (roverLoadedCrateName) {
+				const zone = this.findDropOffZoneNear(
+					roverObj.position,
 					LunarOutpostConfig.physics.crateDeliverRadius,
 					true
 				);
+				if (zone) {
+					return { key: 'F', label: `Unload ${roverLoadedCrateName} at ${zone.label}` };
+				}
+				return { key: 'F', label: `Unload ${roverLoadedCrateName} from Rover` };
+			}
 
-				if (targetZone) {
-					if (this.phase === 'briefing') {
-						this.phase = 'resupply';
-					}
-					this.completeDropOffAtZone(targetZone, crate, scene, world);
+			const nearCrate = this.findNearestCrate(roverObj.position, 4.8);
+			if (nearCrate) {
+				return { key: 'F', label: `Load ${nearCrate.name} onto Rover` };
+			}
+			return null;
+		}
+
+		if (carryingCrateName) {
+			const zone = this.findDropOffZoneNear(
+				playerPos,
+				LunarOutpostConfig.physics.crateDeliverRadius,
+				true
+			);
+			if (zone) {
+				return { key: 'F', label: `Drop ${carryingCrateName} at ${zone.label}` };
+			}
+			if (roverObj && playerPos.distanceTo(roverObj.position) <= 3.55 && !roverLoadedCrateName) {
+				return { key: 'F', label: `Load ${carryingCrateName} onto Rover` };
+			}
+			return { key: 'F', label: `Drop ${carryingCrateName}` };
+		}
+
+		for (const dust of this.dustyPanels) {
+			if (!dust.visible) continue;
+			const wp = new THREE.Vector3();
+			dust.getWorldPosition(wp);
+			if (wp.distanceTo(playerPos) <= LunarOutpostConfig.physics.interactionRadius) {
+				return { key: 'E', label: 'Wipe Lunar Dust off Solar Panel' };
+			}
+		}
+
+		for (const entry of this.sampleNodes) {
+			if (entry.card.collected) continue;
+			const wp = new THREE.Vector3();
+			entry.object.getWorldPosition(wp);
+			if (wp.distanceTo(playerPos) <= LunarOutpostConfig.physics.interactionRadius) {
+				return { key: 'E', label: `Scan ${entry.card.title} (${entry.card.formula})` };
+			}
+		}
+
+		if (this.geologyConsole) {
+			const labPos = new THREE.Vector3();
+			this.geologyConsole.getWorldPosition(labPos);
+			if (labPos.distanceTo(playerPos) <= LunarOutpostConfig.physics.workstationRadius) {
+				const pending = this.samples.find((s) => s.collected && !s.analyzed);
+				if (pending) {
+					return { key: 'E', label: `Analyze ${pending.title} at Geology Lab` };
 				}
 			}
 		}
 
-		if (this.phase === 'launched' && this.launchSequenceTimer > 0) {
-			this.launchSequenceTimer += dt;
-			if (world.landerAssembly) {
-				const ascentSpeed = Math.min(48, this.launchSequenceTimer * this.launchSequenceTimer * 3.8);
-				world.landerAssembly.position.y += ascentSpeed * dt;
+		if (this.phase === 'finale_ready' && this.launchPad) {
+			const padPos = new THREE.Vector3();
+			this.launchPad.getWorldPosition(padPos);
+			if (padPos.distanceTo(playerPos) <= LunarOutpostConfig.physics.launchPadRadius) {
+				return { key: 'E', label: 'Trigger Sample Return Launch' };
 			}
 		}
 
-		this.syncSkywardMissionBeacons(world, astronaut, rover);
+		if (roverObj && roverLoadedCrateName && playerPos.distanceTo(roverObj.position) <= 3.55) {
+			return { key: 'F', label: `Take ${roverLoadedCrateName} from Rover` };
+		}
 
-		const actionPrompt = this.computeActionPrompt(
-			actorPos,
-			world,
-			astronaut,
-			rover,
-			machinery,
-			roverState
+		const nearCrate = this.findNearestCrate(
+			playerPos,
+			LunarOutpostConfig.physics.interactionRadius
 		);
-
-		const dustyRemaining = machinery.getDustyPanelCount();
-		const scannerPowerPct = this.maintenanceActive
-			? Math.max(40, Math.round(100 - dustyRemaining * 10))
-			: 100;
-
-		const carriedName = rover.isSeated
-			? (rover.loadedCrate?.name ?? null)
-			: (astronaut.carryingCrate?.name ?? null);
-
-		return {
-			phase: this.phase,
-			speaker: this.speaker,
-			dialogue: this.dialogue,
-			actionPrompt,
-			cratesDelivered: this.cratesDelivered,
-			cratesRequired: LunarOutpostConfig.resupplyRequiredCount,
-			dropOffZones: world.dropOffZones.map((z) => ({
-				id: z.id,
-				label: z.label,
-				shortHint: z.shortHint,
-				delivered: z.delivered,
-				deliveredCrateName: z.deliveredCrateName
-			})),
-			carryingCrateName: carriedName,
-			samplesCollectedCount: this.samples.filter((s) => s.collected).length,
-			samplesAnalyzedCount: this.samples.filter((s) => s.analyzed).length,
-			samples: this.samples.map((s) => ({ ...s })),
-			activeDiscoveryCard: this.activeDiscoveryCard ? { ...this.activeDiscoveryCard } : null,
-			maintenanceAlert: {
-				active: this.maintenanceActive,
-				title: hudCopy.maintenanceAlert.title,
-				message: hudCopy.maintenanceAlert.message,
-				dustyPanelsRemaining: dustyRemaining,
-				totalPanels: world.solarDustLayers.length
-			},
-			rover: roverState,
-			solar,
-			scannerPowerPct,
-			isPointerLocked
-		};
-	}
-
-	/**
-	 * Routes faint yellow skyward light pillars to every active waypoint across all phases
-	 * so objectives stand out clearly across the lunar crater terrain.
-	 */
-	private syncSkywardMissionBeacons(
-		world: OutpostWorldBuilder,
-		astronaut: AstronautController,
-		rover: OrionRoverSystem
-	) {
-		const waypoints: SkywardWaypointTarget[] = [];
-		const isSupplyPhase = this.phase === 'briefing' || this.phase === 'resupply';
-
-		// Drop-off ring pillars only stay visible during supply phases
-		for (const zone of world.dropOffZones) {
-			zone.beaconMesh.visible = isSupplyPhase && !zone.delivered;
+		if (nearCrate) {
+			return { key: 'F', label: `Pick Up ${nearCrate.name}` };
 		}
 
-		// Sample pillars only appear during exploration for uncollected nodes
-		for (const sample of this.samples) {
-			const beacon = world.sampleBeacons.get(sample.nodeName);
-			if (beacon) {
-				beacon.visible = this.phase === 'exploration' && !sample.collected;
-			}
-		}
-
-		if (isSupplyPhase) {
-			const holdingCrate = astronaut.carryingCrate !== null || rover.loadedCrate !== null;
-			if (!holdingCrate) {
-				// Point skyward beams to undelivered supply crates so the player can spot them easily
-				const cratePos = new THREE.Vector3();
-				for (const crate of world.supplyCrates) {
-					if (crate.userData?.delivered) continue;
-					crate.getWorldPosition(cratePos);
-					const hit = world.sampleSurfaceAt(cratePos.x, cratePos.z);
-					waypoints.push({
-						id: `crate_${crate.name}`,
-						position: new THREE.Vector3(cratePos.x, hit.y, cratePos.z),
-						intensity: 0.9,
-						radiusScale: 0.72
-					});
-				}
-			}
-		}
-
-		// Solar panel dust maintenance beacons take priority when active
-		if (this.maintenanceActive) {
-			const dustPos = new THREE.Vector3();
-			for (let i = 0; i < world.solarDustLayers.length; i++) {
-				const dust = world.solarDustLayers[i];
-				if (!dust.visible) continue;
-				dust.getWorldPosition(dustPos);
-				const hit = world.sampleSurfaceAt(dustPos.x, dustPos.z);
-				waypoints.push({
-					id: `solar_dust_${i}`,
-					position: new THREE.Vector3(dustPos.x, hit.y, dustPos.z),
-					intensity: 1.05,
-					radiusScale: 0.85
-				});
-			}
-		}
-
-		const hasPendingAnalysis = this.samples.some((s) => s.collected && !s.analyzed);
-		if (this.phase === 'exploration' && hasPendingAnalysis) {
-			const labHit = world.sampleSurfaceAt(world.workstationPos.x, world.workstationPos.z);
-			waypoints.push({
-				id: 'geology_workstation',
-				position: new THREE.Vector3(world.workstationPos.x, labHit.y, world.workstationPos.z + 2.0),
-				intensity: 1.15,
-				radiusScale: 1.15
-			});
-		}
-
-		if (this.phase === 'finale_ready') {
-			const padHit = world.sampleSurfaceAt(world.launchPadPos.x, world.launchPadPos.z);
-			waypoints.push({
-				id: 'landing_pad_launch',
-				position: new THREE.Vector3(world.launchPadPos.x, padHit.y, world.launchPadPos.z),
-				intensity: 1.25,
-				radiusScale: 1.5
-			});
-		}
-
-		world.updateSkywardBeacons(waypoints, this.elapsedSec, hasPendingAnalysis);
-	}
-
-	private computeActionPrompt(
-		actorPos: THREE.Vector3,
-		world: OutpostWorldBuilder,
-		astronaut: AstronautController,
-		rover: OrionRoverSystem,
-		machinery: OutpostMachinerySystem,
-		roverState: RoverHudState
-	): string | null {
-		const isSupplyPhase = this.phase === 'briefing' || this.phase === 'resupply';
-		const nearbyDropZone = isSupplyPhase
-			? world.findDropOffZoneNear(actorPos, LunarOutpostConfig.physics.crateDeliverRadius, true)
-			: null;
-		const nearRoverCargo = !rover.isSeated && rover.isNearCargoRack(actorPos);
-
-		if (rover.isSeated) {
-			if (isSupplyPhase) {
-				if (rover.loadedCrate) {
-					return nearbyDropZone
-						? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
-						: 'Box Secured on Rear Rack (1/1) • Drive to Station Ring & Press [F] to Unload';
-				}
-				return 'Drive near any Supply Box & press [F] to Stick onto Rear Rack • [E] Exit Rover';
-			}
-			return 'WASD Drive • [L] Headlights • [E] Exit Rover';
-		}
-
-		if (astronaut.carryingCrate && nearRoverCargo) {
-			return rover.loadedCrate
-				? 'Press [F] to Place on Rover (Full 1/1 — Extra Box Will Fall Off Side)'
-				: 'Press [F] to Stick Supply Box onto Top-Back of Rover';
-		}
-
-		if (!astronaut.carryingCrate && nearRoverCargo && rover.loadedCrate) {
-			return 'Press [F] to Take Supply Box from Rover (or [E] to Drive)';
-		}
-
-		if (roverState.canBoard) {
-			return 'Press [E] to Drive Orion Moon Rover';
-		}
-		if (machinery.hasDustyPanelNearby(actorPos)) {
-			return 'Press [E] to Wipe Lunar Dust off Solar Panel';
-		}
-		if (this.phase === 'exploration') {
-			const samplePos = new THREE.Vector3();
-			for (const s of this.samples) {
-				if (s.collected) continue;
-				const node = world.sampleNodes.get(s.nodeName);
-				if (!node) continue;
-				node.getWorldPosition(samplePos);
-				if (actorPos.distanceTo(samplePos) <= LunarOutpostConfig.physics.interactionRadius + 1.2) {
-					return `Press [E] to Scan & Collect ${s.title}`;
-				}
-			}
-			const hasPendingAnalysis = this.samples.some((s) => s.collected && !s.analyzed);
-			if (
-				hasPendingAnalysis &&
-				actorPos.distanceTo(world.workstationPos) <= LunarOutpostConfig.physics.workstationRadius
-			) {
-				return 'Press [E] to Analyze Lunar Sample at Geology Lab';
-			}
-		}
-		if (
-			this.phase === 'finale_ready' &&
-			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
-		) {
-			return 'Press [E] to Launch Sample Return Capsule to Earth!';
-		}
-		if (isSupplyPhase) {
-			if (astronaut.carryingCrate) {
-				return nearbyDropZone
-					? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
-					: 'Take Box to Rover Rear Rack or Station Ring (Command Control, Lab, etc.) • [F] Drop';
-			}
-			return 'Press [F] to Pick Up Supply Box (Stick 1 Box onto Rover Rear Rack)';
-		}
-		if (machinery.isNearAirlock(actorPos)) {
-			return 'Press [E] to Toggle Airlock Hatch';
-		}
 		return null;
+	}
+
+	private findNearestCrate(origin: THREE.Vector3, maxDist: number): THREE.Object3D | null {
+		let best: THREE.Object3D | null = null;
+		let bestDist = maxDist;
+		const wp = new THREE.Vector3();
+		for (const crate of this.crates) {
+			if (crate.userData?.delivered) continue;
+			crate.getWorldPosition(wp);
+			const d = origin.distanceTo(wp);
+			if (d <= bestDist) {
+				bestDist = d;
+				best = crate;
+			}
+		}
+		return best;
+	}
+
+	private applyMineralAppearance(
+		node: THREE.Object3D,
+		sampleId: string,
+		scanned: boolean,
+		emissiveIntensity: number
+	): void {
+		const spec = MINERAL_MATERIAL_SPECS[sampleId];
+		if (!spec) return;
+
+		node.traverse((child) => {
+			if (!(child instanceof THREE.Mesh)) return;
+			const mat = (child.material as THREE.MeshStandardMaterial).clone();
+			mat.color.setHex(spec.color);
+			mat.metalness = spec.metalness;
+			mat.roughness = spec.roughness;
+			mat.emissive.setHex(spec.emissive);
+			mat.emissiveIntensity = scanned ? 0.55 : emissiveIntensity;
+			child.material = mat;
+		});
 	}
 }

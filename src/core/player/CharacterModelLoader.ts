@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { LunarOutpostConfig } from '../lunar-outpost.config';
 
-export interface EvaSuitInstanceOptions {
+export interface CharacterInstanceOptions {
+	modelUrl?: string;
 	accentHex?: number;
-	hideVisorForFirstPerson?: boolean;
+	hideHeadForFirstPerson?: boolean;
 }
 
-export interface EvaSuitRigRefs {
+export interface CharacterRigRefs {
+	pelvis: THREE.Object3D | null;
 	head: THREE.Object3D | null;
 	spine: THREE.Object3D | null;
 	leftUpperArm: THREE.Object3D | null;
@@ -17,87 +18,91 @@ export interface EvaSuitRigRefs {
 	rightForearm: THREE.Object3D | null;
 	leftThigh: THREE.Object3D | null;
 	rightThigh: THREE.Object3D | null;
+	leftCalf: THREE.Object3D | null;
+	rightCalf: THREE.Object3D | null;
 	restRotations: Map<THREE.Object3D, THREE.Euler>;
+	restPositions: Map<THREE.Object3D, THREE.Vector3>;
 }
 
-const EVA_NODE_PATTERN = /^(eva[_\s-]*suit|astronaut|eva[_\s-]*character)/i;
+const CHARACTER_NODE_PATTERN = /^(eva[_\s-]*suit|astronaut|eva[_\s-]*character)/i;
 
 class CharacterModelLoader {
 	private loader = new GLTFLoader();
-	private outpostTemplate: THREE.Object3D | null = null;
-	private cachedGltf: GLTF | null = null;
-	private loadPromise: Promise<GLTF | null> | null = null;
+	private embeddedTemplate: THREE.Object3D | null = null;
+	private cachedGltfs = new Map<string, GLTF>();
+	private loadPromises = new Map<string, Promise<GLTF | null>>();
 
-	/**
-	 * Checks the loaded outpost GLB (moon_outpost.glb) for an embedded EVA_Suit model
-	 * so it can be cloned 3x (Player + Maya + Leo) without needing a second GLB file.
-	 */
-	public registerOutpostScene(outpostRoot: THREE.Object3D | null) {
-		this.outpostTemplate = null;
-		if (!outpostRoot) return;
+	public clearEmbeddedTemplate(): void {
+		this.embeddedTemplate = null;
+	}
+
+	public registerEmbeddedTemplate(sceneRoot: THREE.Object3D | null) {
+		this.embeddedTemplate = null;
+		if (!sceneRoot) return;
 
 		let bestCandidate: THREE.Object3D | null = null;
-		outpostRoot.traverse((obj) => {
+		sceneRoot.traverse((obj) => {
 			if (bestCandidate) return;
 			if (obj.name.startsWith('EVA_Astronaut_')) return;
-			if (EVA_NODE_PATTERN.test(obj.name)) {
+			if (CHARACTER_NODE_PATTERN.test(obj.name)) {
 				bestCandidate = obj;
 			}
 		});
 
 		if (bestCandidate) {
-			this.outpostTemplate = bestCandidate;
-			// Hide the raw static template node inside moon_outpost.glb so it doesn't duplicate at spawn
+			this.embeddedTemplate = bestCandidate;
 			(bestCandidate as THREE.Object3D).visible = false;
 		}
 	}
 
-	private loadExternalGltf(): Promise<GLTF | null> {
-		if (this.cachedGltf) return Promise.resolve(this.cachedGltf);
-		if (this.loadPromise) return this.loadPromise;
+	private loadExternalGltf(preferredUrl?: string): Promise<GLTF | null> {
+		const cacheKey = preferredUrl ?? '__default_eva__';
+		const existing = this.cachedGltfs.get(cacheKey);
+		if (existing) return Promise.resolve(existing);
+
+		const pending = this.loadPromises.get(cacheKey);
+		if (pending) return pending;
 
 		const candidateUrls = Array.from(
-			new Set([
-				LunarOutpostConfig.characterModelUrl,
-				'/models/eva_suit.glb',
-				'/models/astronaut.glb'
-			])
+			new Set(
+				[
+					preferredUrl,
+					'/models/eva_astronaut.glb',
+					'/models/eva_suit.glb',
+					'/models/astronaut.glb'
+				].filter((u): u is string => Boolean(u))
+			)
 		);
 
-		this.loadPromise = (async () => {
+		const promise = (async () => {
 			for (const url of candidateUrls) {
-				if (!url) continue;
 				try {
 					const gltf = await this.loader.loadAsync(url);
-					this.cachedGltf = gltf;
+					this.cachedGltfs.set(cacheKey, gltf);
 					return gltf;
 				} catch {
 					// Try next candidate URL
 				}
 			}
-			console.warn(
-				`[LunarOutpost] EVA_Suit model not found in outpost GLB or at "${LunarOutpostConfig.characterModelUrl}". Using articulated fallback EVA suit.`
-			);
 			return null;
 		})();
 
-		return this.loadPromise;
+		this.loadPromises.set(cacheKey, promise);
+		return promise;
 	}
 
-	async createEvaSuitInstance(options: EvaSuitInstanceOptions = {}): Promise<THREE.Group> {
+	async createCharacterInstance(options: CharacterInstanceOptions = {}): Promise<THREE.Group> {
 		const container = new THREE.Group();
 
-		// 1. Prefer the EVA_Suit model embedded in your loaded GLB file
-		if (this.outpostTemplate) {
-			const cloned = SkeletonUtils.clone(this.outpostTemplate) as THREE.Group;
+		if (this.embeddedTemplate) {
+			const cloned = SkeletonUtils.clone(this.embeddedTemplate) as THREE.Group;
 			this.prepareClonedSuit(cloned, options);
 			container.userData.rig = this.extractRigRefs(cloned);
 			container.add(cloned);
 			return container;
 		}
 
-		// 2. Otherwise load from external characterModelUrl
-		const gltf = await this.loadExternalGltf();
+		const gltf = await this.loadExternalGltf(options.modelUrl);
 		if (gltf) {
 			const cloned = SkeletonUtils.clone(gltf.scene) as THREE.Group;
 			this.prepareClonedSuit(cloned, options);
@@ -115,15 +120,15 @@ class CharacterModelLoader {
 			return container;
 		}
 
-		// 3. Articulated procedural EVA suit fallback
 		const fallback = this.buildFallbackSuit(options);
 		container.userData.rig = this.extractRigRefs(fallback);
 		container.add(fallback);
 		return container;
 	}
 
-	private extractRigRefs(root: THREE.Object3D): EvaSuitRigRefs {
-		const rig: EvaSuitRigRefs = {
+	private extractRigRefs(root: THREE.Object3D): CharacterRigRefs {
+		const rig: CharacterRigRefs = {
+			pelvis: null,
 			head: null,
 			spine: null,
 			leftUpperArm: null,
@@ -132,7 +137,10 @@ class CharacterModelLoader {
 			rightForearm: null,
 			leftThigh: null,
 			rightThigh: null,
-			restRotations: new Map()
+			leftCalf: null,
+			rightCalf: null,
+			restRotations: new Map(),
+			restPositions: new Map()
 		};
 
 		const isLeft = (n: string) => /(^|[_.\-\s])(l|left)([_.\-\s]|$)|left/i.test(n);
@@ -142,7 +150,9 @@ class CharacterModelLoader {
 			const n = obj.name;
 			if (!n) return;
 
-			if (!rig.head && /(head|helmet)/i.test(n) && !/visor|light/i.test(n)) {
+			if (!rig.pelvis && /(pelvis|hips|root_bone)/i.test(n)) {
+				rig.pelvis = obj;
+			} else if (!rig.head && /(head|helmet)/i.test(n) && !/visor|light/i.test(n)) {
 				rig.head = obj;
 			} else if (!rig.spine && /(spine1|spine2|chest|torso|upper_body)/i.test(n)) {
 				rig.spine = obj;
@@ -152,6 +162,9 @@ class CharacterModelLoader {
 			} else if (/(upper[_\s-]*arm|shoulder|bicep|(^|[_.\-\s])arm([_.\-\s]|$))/i.test(n)) {
 				if (!rig.leftUpperArm && isLeft(n)) rig.leftUpperArm = obj;
 				else if (!rig.rightUpperArm && isRight(n)) rig.rightUpperArm = obj;
+			} else if (/(calf|shin|lower[_\s-]*leg|knee)/i.test(n)) {
+				if (!rig.leftCalf && isLeft(n)) rig.leftCalf = obj;
+				else if (!rig.rightCalf && isRight(n)) rig.rightCalf = obj;
 			} else if (/(thigh|upper[_\s-]*leg|hip|upleg)/i.test(n)) {
 				if (!rig.leftThigh && isLeft(n)) rig.leftThigh = obj;
 				else if (!rig.rightThigh && isRight(n)) rig.rightThigh = obj;
@@ -159,6 +172,7 @@ class CharacterModelLoader {
 		});
 
 		const joints = [
+			rig.pelvis,
 			rig.head,
 			rig.spine,
 			rig.leftUpperArm,
@@ -166,18 +180,21 @@ class CharacterModelLoader {
 			rig.leftForearm,
 			rig.rightForearm,
 			rig.leftThigh,
-			rig.rightThigh
+			rig.rightThigh,
+			rig.leftCalf,
+			rig.rightCalf
 		];
 		for (const j of joints) {
 			if (j) {
 				rig.restRotations.set(j, j.rotation.clone());
+				rig.restPositions.set(j, j.position.clone());
 			}
 		}
 
 		return rig;
 	}
 
-	private prepareClonedSuit(cloned: THREE.Object3D, options: EvaSuitInstanceOptions) {
+	private prepareClonedSuit(cloned: THREE.Object3D, options: CharacterInstanceOptions) {
 		cloned.visible = true;
 		cloned.position.set(0, 0, 0);
 		cloned.rotation.set(0, 0, 0);
@@ -188,7 +205,6 @@ class CharacterModelLoader {
 
 			obj.castShadow = true;
 			obj.receiveShadow = true;
-			// Prevent Three.js from frustum-culling cloned SkinnedMeshes (EVA_Suit_Rig)
 			obj.frustumCulled = false;
 
 			const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -207,17 +223,19 @@ class CharacterModelLoader {
 
 			obj.material = Array.isArray(obj.material) ? clonedMaterials : clonedMaterials[0];
 
-			if (options.hideVisorForFirstPerson) {
-				const isVisor =
-					/visor/i.test(obj.name) ||
-					clonedMaterials.some((m) => m.name === 'Suit_Gold_Visor' || /visor/i.test(m.name));
-				if (isVisor) {
+			if (options.hideHeadForFirstPerson) {
+				const isHeadPart =
+					/(visor|helmet|head)/i.test(obj.name) ||
+					clonedMaterials.some(
+						(m) => m.name === 'Suit_Gold_Visor' || /(visor|helmet)/i.test(m.name)
+					);
+				const isTorsoPart = /(torso|chest|backpack|plss|body)/i.test(obj.name);
+				if (isHeadPart && !isTorsoPart) {
 					obj.visible = false;
 				}
 			}
 		});
 
-		// Normalize scale if exported in cm/mm and ground the soles of the boots to y = 0
 		cloned.updateMatrixWorld(true);
 		const box = new THREE.Box3().setFromObject(cloned);
 		if (!box.isEmpty()) {
@@ -234,7 +252,7 @@ class CharacterModelLoader {
 		}
 	}
 
-	private buildFallbackSuit(options: EvaSuitInstanceOptions): THREE.Group {
+	private buildFallbackSuit(options: CharacterInstanceOptions): THREE.Group {
 		const fallback = new THREE.Group();
 		const suitMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.42 });
 		const jointMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.65 });
@@ -248,32 +266,40 @@ class CharacterModelLoader {
 			roughness: 0.12
 		});
 
-		// Pelvis / hips
 		const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.26), jointMat);
+		pelvis.name = 'Pelvis_Root';
 		pelvis.position.set(0, 0.84, 0);
 		pelvis.castShadow = true;
 		fallback.add(pelvis);
 
-		// Legs (articulated thighs)
 		for (const side of [-1, 1]) {
 			const thighPivot = new THREE.Group();
 			thighPivot.name = side < 0 ? 'Thigh_L' : 'Thigh_R';
 			thighPivot.position.set(side * 0.13, 0.82, 0);
 
-			const legMesh = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.72, 0.18), suitMat);
-			legMesh.position.set(0, -0.36, 0);
-			legMesh.castShadow = true;
-			thighPivot.add(legMesh);
+			const thighMesh = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.36, 0.18), suitMat);
+			thighMesh.position.set(0, -0.18, 0);
+			thighMesh.castShadow = true;
+			thighPivot.add(thighMesh);
+
+			const calfPivot = new THREE.Group();
+			calfPivot.name = side < 0 ? 'Calf_L' : 'Calf_R';
+			calfPivot.position.set(0, -0.36, 0);
+
+			const calfMesh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.36, 0.17), suitMat);
+			calfMesh.position.set(0, -0.18, 0);
+			calfMesh.castShadow = true;
+			calfPivot.add(calfMesh);
 
 			const bootMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.26), jointMat);
-			bootMesh.position.set(0, -0.74, 0.03);
+			bootMesh.position.set(0, -0.38, 0.03);
 			bootMesh.castShadow = true;
-			thighPivot.add(bootMesh);
+			calfPivot.add(bootMesh);
 
+			thighPivot.add(calfPivot);
 			fallback.add(thighPivot);
 		}
 
-		// Upper Spine / Torso
 		const spinePivot = new THREE.Group();
 		spinePivot.name = 'Spine_Chest';
 		spinePivot.position.set(0, 0.94, 0);
@@ -293,7 +319,6 @@ class CharacterModelLoader {
 		stripe.position.set(0, 0.44, 0);
 		spinePivot.add(stripe);
 
-		// Articulated Arms (Upper Arm + Forearm pivots)
 		for (const side of [-1, 1]) {
 			const upperArmPivot = new THREE.Group();
 			upperArmPivot.name = side < 0 ? 'UpperArm_L' : 'UpperArm_R';
@@ -321,13 +346,12 @@ class CharacterModelLoader {
 			spinePivot.add(upperArmPivot);
 		}
 
-		// Head / Helmet pivot
 		const headPivot = new THREE.Group();
 		headPivot.name = 'Head_Helmet';
 		headPivot.position.set(0, 0.58, 0);
 		spinePivot.add(headPivot);
 
-		if (!options.hideVisorForFirstPerson) {
+		if (!options.hideHeadForFirstPerson) {
 			const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 16), suitMat);
 			helmet.position.set(0, 0.16, 0);
 			helmet.castShadow = true;

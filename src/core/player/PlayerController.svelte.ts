@@ -1,304 +1,797 @@
-import type RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import {
-	GameConfig,
-	type MovementProfile,
-	type MovementProfileName
-} from '../../config/game.config';
-import { physicsWorld } from '../engine/PhysicsWorld';
+	FlatSurfaceProvider,
+	type CollisionWorld,
+	type SurfaceProvider
+} from '../engine/CollisionWorld';
 import type { CameraController } from '../engine/SceneManager';
+import {
+	characterModelLoader,
+	type CharacterInstanceOptions,
+	type CharacterRigRefs
+} from './CharacterModelLoader';
 import { SvelteSet } from 'svelte/reactivity';
 
-export interface SpawnOptions {
-	position: [number, number, number];
-	yaw?: number;
-	pitch?: number;
-	profile?: MovementProfileName;
+export interface PlayerPhysicsConfig {
+	walkSpeed: number;
+	sprintSpeed: number;
+	jumpVelocity: number;
+	gravity: number;
+	colliderRadius: number;
+	colliderHeight: number;
+	eyeHeight: number;
+	eyeForwardOffset: number;
+	boundsXZ: number;
 }
 
+export const DEFAULT_EARTH_PLAYER_CONFIG: PlayerPhysicsConfig = {
+	walkSpeed: 4.5,
+	sprintSpeed: 7.5,
+	jumpVelocity: 4.8,
+	gravity: 9.81,
+	colliderRadius: 0.44,
+	colliderHeight: 1.8,
+	eyeHeight: 1.66,
+	eyeForwardOffset: 0.25,
+	boundsXZ: 215
+};
+
+export interface PlayerSpawnOptions {
+	position?: THREE.Vector3 | [number, number, number] | { x: number; y?: number; z: number };
+	x?: number;
+	y?: number;
+	z?: number;
+	yaw?: number;
+	yawRad?: number;
+	pitch?: number;
+	pitchRad?: number;
+	surface?: SurfaceProvider;
+	canvas?: HTMLCanvasElement | null;
+	vehicle?: VehicleCameraDelegate | null;
+	physics?: Partial<PlayerPhysicsConfig>;
+	visualOptions?: CharacterInstanceOptions;
+}
+
+export interface DropOffZoneMatch {
+	position: THREE.Vector3;
+}
+
+export interface CargoZoneProvider {
+	findDropOffZoneNear(
+		pos: THREE.Vector3,
+		radius?: number,
+		onlyUndelivered?: boolean
+	): DropOffZoneMatch | null;
+}
+
+export interface CargoReceiver {
+	readonly vehicleObject: THREE.Object3D | null;
+	readonly loadedCrate: THREE.Object3D | null;
+	isNearCargoRack(pos: THREE.Vector3): boolean;
+	isCrateFalling(crate: THREE.Object3D): boolean;
+	tryPlaceCrateFromPlayer(
+		crate: THREE.Object3D,
+		scene: THREE.Scene,
+		surface: SurfaceProvider
+	): { accepted: boolean; message: string };
+	takeLoadedCrateForPlayer(): THREE.Object3D | null;
+}
+
+export interface VehicleCameraDelegate {
+	readonly isSeated: boolean;
+	applyFirstPersonDriverCamera(
+		camera: THREE.PerspectiveCamera,
+		headYawOffsetRad: number,
+		headPitchRad: number
+	): boolean;
+}
+
+export interface PlayerCrateInteractOptions {
+	vehicle?: CargoReceiver | null;
+	zoneProvider?: CargoZoneProvider | null;
+	deliverRadius?: number;
+	interactionRadius?: number;
+}
+
+const MOVEMENT_CODES = new Set([
+	'KeyW',
+	'KeyA',
+	'KeyS',
+	'KeyD',
+	'ArrowUp',
+	'ArrowDown',
+	'ArrowLeft',
+	'ArrowRight',
+	'Space',
+	'ShiftLeft',
+	'ShiftRight'
+]);
+
 export class PlayerController implements CameraController {
+	public readonly root = new THREE.Group();
+	public yawRad = Math.PI;
+	public pitchRad = 0.0;
+	public carryingCrate: THREE.Object3D | null = null;
+	public physics: PlayerPhysicsConfig;
+
+	// Svelte 5 reactive state consumed directly by GameHUD.svelte
 	public isActive = $state(false);
 	public isPointerLocked = $state(false);
 	public debugOrbitMode = $state(false);
-	public jumpStamina = $state(1.0);
+	public isGrounded = $state(true);
+	public isMoving = $state(false);
+	public isSeated = $state(false);
+	public carryingItemName = $state<string | null>(null);
 
-	private body: RAPIER.RigidBody | null = null;
-	private canvas: HTMLCanvasElement | null = null;
+	private velocityY = 0;
+	private walkCycle = 0;
+	private bobAmount = 0;
+	private characterVisual: THREE.Group | null = null;
+	private characterRig: CharacterRigRefs | null = null;
+	private activeVehicle: VehicleCameraDelegate | null = null;
+	private canvasEl: HTMLCanvasElement | null = null;
+	private boundCanvasTarget: HTMLCanvasElement | null = null;
+	private listenersAttached = false;
+	private spawnGeneration = 0;
+	private ownKeys = new SvelteSet<string>();
 
-	// Capsule dimensions: total height = 2 * (0.525 + 0.35) = 1.75m
-	private readonly radius = 0.35;
-	private readonly halfHeight = 0.525;
-	private readonly eyeOffsetY = 0.65;
+	private boundMouseMove = (e: MouseEvent) => {
+		if (!this.isActive || !this.isPointerLocked || this.debugOrbitMode) return;
+		this.yawRad -= e.movementX * 0.0022;
+		this.pitchRad = THREE.MathUtils.clamp(this.pitchRad - e.movementY * 0.0022, -1.25, 1.25);
+	};
 
-	private yaw = 0;
-	private pitch = 0;
-	private readonly lookSensitivity = 0.0022;
-	private profile: MovementProfile = GameConfig.physics.movementProfiles.earthWalk;
+	private boundPointerLockChange = () => {
+		this.isPointerLocked = Boolean(this.canvasEl && document.pointerLockElement === this.canvasEl);
+	};
 
-	// Jump & airborne trajectory state
-	private wasGrounded = true;
-	private jumpCooldown = 0;
-	private hasHorizontalJump = false;
-	private jumpDir = new THREE.Vector2(0, -1);
-
-	private keys = new SvelteSet<string>();
-	private euler = new THREE.Euler(0, 0, 0, 'YXZ');
-	private forwardVec = new THREE.Vector3();
-	private rightVec = new THREE.Vector3();
-	private wishDir = new THREE.Vector3();
-	private interpPos = new THREE.Vector3();
-
-	private boundKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
-	private boundKeyUp = (e: KeyboardEvent) => this.onKeyUp(e);
-	private boundBlur = () => this.keys.clear();
-	private boundMouseMove = (e: MouseEvent) => this.onMouseMove(e);
-	private boundPointerLockChange = () => this.onPointerLockChange();
-	private boundCanvasClick = () => this.requestPointerLock();
-
-	attachCanvas(canvasElement: HTMLCanvasElement) {
-		this.canvas = canvasElement;
-		this.canvas.addEventListener('click', this.boundCanvasClick);
-		window.addEventListener('keydown', this.boundKeyDown);
-		window.addEventListener('keyup', this.boundKeyUp);
-		window.addEventListener('blur', this.boundBlur);
-		document.addEventListener('mousemove', this.boundMouseMove);
-		document.addEventListener('pointerlockchange', this.boundPointerLockChange);
-	}
-
-	spawn(options: SpawnOptions) {
-		this.despawn();
-
-		this.profile = GameConfig.physics.movementProfiles[options.profile ?? 'earthWalk'];
-		this.yaw = options.yaw ?? 0;
-		this.pitch = options.pitch ?? 0;
-		this.debugOrbitMode = false;
-		this.jumpStamina = 1.0;
-		this.wasGrounded = true;
-		this.jumpCooldown = 0;
-		this.hasHorizontalJump = false;
-
-		this.body = physicsWorld.addPlayerCapsule(this.radius, this.halfHeight, options.position);
-		this.isActive = this.body !== null;
-	}
-
-	despawn() {
-		if (this.body) {
-			physicsWorld.removeBody(this.body);
-			this.body = null;
+	private boundCanvasClick = () => {
+		if (!this.isActive || this.debugOrbitMode || !this.canvasEl) return;
+		if (document.pointerLockElement !== this.canvasEl) {
+			void this.canvasEl.requestPointerLock?.();
 		}
-		this.keys.clear();
-		this.isActive = false;
-		this.debugOrbitMode = false;
+	};
 
-		if (document.pointerLockElement === this.canvas) {
-			document.exitPointerLock();
-		}
-	}
-
-	requestPointerLock() {
-		if (!this.isActive || this.debugOrbitMode || !this.canvas) return;
-		if (document.pointerLockElement !== this.canvas) {
-			this.canvas.requestPointerLock();
-		}
-	}
-
-	private onPointerLockChange() {
-		this.isPointerLocked = Boolean(this.canvas && document.pointerLockElement === this.canvas);
-	}
-
-	private onKeyDown(event: KeyboardEvent) {
+	private boundKeyDown = (e: KeyboardEvent) => {
 		if (!this.isActive) return;
 
-		if (event.code === 'F2') {
-			event.preventDefault();
+		const target = e.target as HTMLElement | null;
+		if (
+			target &&
+			(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+		) {
+			return;
+		}
+
+		if (e.code === 'F2') {
+			e.preventDefault();
 			this.debugOrbitMode = !this.debugOrbitMode;
-			if (this.debugOrbitMode && document.pointerLockElement === this.canvas) {
-				document.exitPointerLock();
+			if (this.debugOrbitMode && document.pointerLockElement) {
+				document.exitPointerLock?.();
 			}
 			return;
 		}
 
-		this.keys.add(event.code);
-
-		if (event.code === 'Space' && !this.debugOrbitMode) {
-			this.tryJump();
-		}
-	}
-
-	private onKeyUp(event: KeyboardEvent) {
-		this.keys.delete(event.code);
-	}
-
-	private onMouseMove(event: MouseEvent) {
-		if (!this.isActive || !this.isPointerLocked || this.debugOrbitMode) return;
-
-		this.yaw -= event.movementX * this.lookSensitivity;
-		this.pitch -= event.movementY * this.lookSensitivity;
-
-		const maxPitch = Math.PI / 2 - 0.08;
-		this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
-	}
-
-	private checkGrounded(): boolean {
-		if (!this.body || this.jumpCooldown > 0) return false;
-		const rayLength = this.halfHeight + this.radius + 0.06;
-		return physicsWorld.isBodyGrounded(this.body, rayLength);
-	}
-
-	private lockAirborneDirection(vx: number, vz: number) {
-		const horizSpeed = Math.hypot(vx, vz);
-		if (horizSpeed > 0.15) {
-			this.hasHorizontalJump = true;
-			this.jumpDir.set(vx / horizSpeed, vz / horizSpeed);
-		} else {
-			this.hasHorizontalJump = false;
-		}
-	}
-
-	private tryJump() {
-		if (!this.body || this.profile.zeroG || this.profile.jumpVelocity <= 0) return;
-		if (!this.checkGrounded()) return;
-
-		const vel = this.body.linvel();
-
-		const fatigueScale =
-			this.profile.minJumpMultiplier + (1 - this.profile.minJumpMultiplier) * this.jumpStamina;
-		const takeoffVy = this.profile.jumpVelocity * fatigueScale;
-
-		this.jumpStamina = Math.max(0, this.jumpStamina - this.profile.jumpFatiguePerJump);
-		this.jumpCooldown = 0.15;
-		this.wasGrounded = false;
-		this.lockAirborneDirection(vel.x, vel.z);
-
-		this.body.setLinvel({ x: vel.x, y: takeoffVy, z: vel.z }, true);
-	}
-
-	/**
-	 * Called by SceneManager each frame when First-Person control is active.
-	 */
-	updateCamera(delta: number, camera: THREE.PerspectiveCamera): boolean {
-		if (!this.isActive || !this.body || this.debugOrbitMode) {
-			return false;
-		}
-
-		if (this.jumpCooldown > 0) {
-			this.jumpCooldown = Math.max(0, this.jumpCooldown - delta);
-		}
-
-		this.forwardVec.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
-		this.rightVec.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-
-		let moveForward = 0;
-		let moveRight = 0;
-
-		if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) moveForward += 1;
-		if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) moveForward -= 1;
-		if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) moveRight += 1;
-		if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) moveRight -= 1;
-
-		this.wishDir
-			.set(0, 0, 0)
-			.addScaledVector(this.forwardVec, moveForward)
-			.addScaledVector(this.rightVec, moveRight);
-
-		const hasMoveInput = this.wishDir.lengthSq() > 0;
-		if (hasMoveInput) {
-			this.wishDir.normalize();
-		}
-
-		const sprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-		const maxSpeed = this.profile.walkSpeed * (sprinting ? this.profile.sprintMultiplier : 1);
-
-		const currentVel = this.body.linvel();
-		const grounded = this.profile.zeroG || this.checkGrounded();
-
-		if (this.wasGrounded && !grounded && !this.profile.zeroG) {
-			this.lockAirborneDirection(currentVel.x, currentVel.z);
-		}
-		this.wasGrounded = grounded;
-
-		let nextVx = currentVel.x;
-		let nextVz = currentVel.z;
-		let nextVy = currentVel.y;
-
-		if (grounded) {
-			if (!this.profile.zeroG && this.jumpStamina < 1.0) {
-				this.jumpStamina = Math.min(
-					1.0,
-					this.jumpStamina + this.profile.staminaRecoveryRate * delta
-				);
+		if (MOVEMENT_CODES.has(e.code)) {
+			this.ownKeys.add(e.code);
+			if (
+				e.code === 'Space' ||
+				e.code === 'ArrowUp' ||
+				e.code === 'ArrowDown' ||
+				e.code === 'ArrowLeft' ||
+				e.code === 'ArrowRight'
+			) {
+				e.preventDefault();
 			}
+		}
+	};
 
-			const targetVx = hasMoveInput ? this.wishDir.x * maxSpeed : 0;
-			const targetVz = hasMoveInput ? this.wishDir.z * maxSpeed : 0;
+	private boundKeyUp = (e: KeyboardEvent) => {
+		this.ownKeys.delete(e.code);
+	};
 
-			const diffX = targetVx - currentVel.x;
-			const diffZ = targetVz - currentVel.z;
-			const diffLen = Math.hypot(diffX, diffZ);
+	private boundBlur = () => {
+		this.ownKeys.clear();
+	};
 
-			const accelRate = hasMoveInput ? this.profile.groundAccel : this.profile.groundDecel;
-			const maxDelta = accelRate * delta;
+	constructor(physics: Partial<PlayerPhysicsConfig> = {}) {
+		this.physics = { ...DEFAULT_EARTH_PLAYER_CONFIG, ...physics };
+		this.root.userData.controller = this;
+	}
 
-			if (diffLen <= maxDelta || diffLen === 0) {
-				nextVx = targetVx;
-				nextVz = targetVz;
+	attachCanvas(canvas: HTMLCanvasElement | null) {
+		if (this.boundCanvasTarget && this.boundCanvasTarget !== canvas) {
+			this.boundCanvasTarget.removeEventListener('click', this.boundCanvasClick);
+			this.boundCanvasTarget = null;
+		}
+		this.canvasEl = canvas;
+		if (this.isActive && this.canvasEl && this.boundCanvasTarget !== this.canvasEl) {
+			this.canvasEl.addEventListener('click', this.boundCanvasClick);
+			this.boundCanvasTarget = this.canvasEl;
+		}
+	}
+
+	async spawn(
+		scene: THREE.Scene,
+		posOrXOrOptions?: THREE.Vector3 | [number, number, number] | number | PlayerSpawnOptions,
+		zOrYOrOptions?: number | SurfaceProvider | PlayerSpawnOptions,
+		zOrSurface?: number | SurfaceProvider,
+		yawOrVisualOptions?: number | CharacterInstanceOptions
+	): Promise<void> {
+		let spawnX = 0;
+		let spawnY: number | undefined = undefined;
+		let spawnZ = 0;
+		let yaw = Math.PI;
+		let pitch = 0;
+		let explicitSurface: SurfaceProvider | undefined = undefined;
+		let canvas: HTMLCanvasElement | null | undefined = undefined;
+		let vehicle: VehicleCameraDelegate | null = null;
+		let visualOptions: CharacterInstanceOptions = {
+			accentHex: 0xe6480d,
+			hideHeadForFirstPerson: true
+		};
+
+		const applyOptions = (opts: PlayerSpawnOptions) => {
+			if (opts.physics) this.setPhysics(opts.physics);
+			if (opts.position instanceof THREE.Vector3) {
+				spawnX = opts.position.x;
+				spawnY = opts.position.y;
+				spawnZ = opts.position.z;
+			} else if (Array.isArray(opts.position)) {
+				[spawnX, spawnY, spawnZ] = opts.position;
+			} else if (opts.position && typeof opts.position === 'object') {
+				spawnX = opts.position.x;
+				spawnY = opts.position.y;
+				spawnZ = opts.position.z;
+			}
+			if (typeof opts.x === 'number') spawnX = opts.x;
+			if (typeof opts.y === 'number') spawnY = opts.y;
+			if (typeof opts.z === 'number') spawnZ = opts.z;
+			if (typeof opts.yawRad === 'number') yaw = opts.yawRad;
+			else if (typeof opts.yaw === 'number') yaw = opts.yaw;
+			if (typeof opts.pitchRad === 'number') pitch = opts.pitchRad;
+			else if (typeof opts.pitch === 'number') pitch = opts.pitch;
+			if (opts.surface) explicitSurface = opts.surface;
+			if (opts.canvas !== undefined) canvas = opts.canvas;
+			if (opts.vehicle !== undefined) vehicle = opts.vehicle;
+			if (opts.visualOptions) visualOptions = { ...visualOptions, ...opts.visualOptions };
+		};
+
+		if (posOrXOrOptions instanceof THREE.Vector3) {
+			spawnX = posOrXOrOptions.x;
+			spawnY = posOrXOrOptions.y;
+			spawnZ = posOrXOrOptions.z;
+			if (typeof zOrYOrOptions === 'number') yaw = zOrYOrOptions;
+			else if (
+				zOrYOrOptions &&
+				typeof zOrYOrOptions === 'object' &&
+				!('sampleSurfaceAt' in zOrYOrOptions)
+			) {
+				applyOptions(zOrYOrOptions);
+			}
+		} else if (Array.isArray(posOrXOrOptions)) {
+			[spawnX, spawnY, spawnZ] = posOrXOrOptions;
+			if (typeof zOrYOrOptions === 'number') yaw = zOrYOrOptions;
+			else if (
+				zOrYOrOptions &&
+				typeof zOrYOrOptions === 'object' &&
+				!('sampleSurfaceAt' in zOrYOrOptions)
+			) {
+				applyOptions(zOrYOrOptions);
+			}
+		} else if (typeof posOrXOrOptions === 'number') {
+			spawnX = posOrXOrOptions;
+			if (typeof zOrSurface === 'number') {
+				spawnY = typeof zOrYOrOptions === 'number' ? zOrYOrOptions : 0;
+				spawnZ = zOrSurface;
+				if (typeof yawOrVisualOptions === 'number') yaw = yawOrVisualOptions;
 			} else {
-				nextVx += (diffX / diffLen) * maxDelta;
-				nextVz += (diffZ / diffLen) * maxDelta;
-			}
-
-			if (this.profile.zeroG) {
-				let vertical = 0;
-				if (this.keys.has('Space')) vertical += 1;
-				if (this.keys.has('ControlLeft') || this.keys.has('KeyC')) vertical -= 1;
-
-				const targetVy = vertical * maxSpeed;
-				const diffY = targetVy - currentVel.y;
-				const maxDeltaY =
-					(vertical !== 0 ? this.profile.groundAccel : this.profile.groundDecel) * delta;
-
-				nextVy =
-					Math.abs(diffY) <= maxDeltaY ? targetVy : currentVel.y + Math.sign(diffY) * maxDeltaY;
-			}
-		} else if (hasMoveInput && this.hasHorizontalJump) {
-			const alignment = this.wishDir.x * this.jumpDir.x + this.wishDir.z * this.jumpDir.y;
-
-			if (alignment < -0.25) {
-				const opposingStrength = Math.abs(alignment);
-				const currentHorizSpeed = Math.hypot(currentVel.x, currentVel.z);
-
-				if (currentHorizSpeed > 0.01) {
-					const reducedSpeed = Math.max(
-						0,
-						currentHorizSpeed - this.profile.airBrakeDecel * opposingStrength * delta
-					);
-					const scale = reducedSpeed / currentHorizSpeed;
-					nextVx = currentVel.x * scale;
-					nextVz = currentVel.z * scale;
+				spawnZ = typeof zOrYOrOptions === 'number' ? zOrYOrOptions : 0;
+				if (zOrSurface && typeof zOrSurface === 'object' && 'sampleSurfaceAt' in zOrSurface) {
+					explicitSurface = zOrSurface;
+				}
+				if (yawOrVisualOptions && typeof yawOrVisualOptions === 'object') {
+					visualOptions = { ...visualOptions, ...yawOrVisualOptions };
 				}
 			}
+		} else if (posOrXOrOptions && typeof posOrXOrOptions === 'object') {
+			applyOptions(posOrXOrOptions);
 		}
 
-		this.body.setLinvel({ x: nextVx, y: nextVy, z: nextVz }, true);
+		const resolvedSurface =
+			explicitSurface ?? new FlatSurfaceProvider(typeof spawnY === 'number' ? spawnY : 0);
 
-		const pos =
-			physicsWorld.getInterpolatedPlayerPosition(this.interpPos) ?? this.body.translation();
-		camera.position.set(pos.x, pos.y + this.eyeOffsetY, pos.z);
+		this.yawRad = yaw;
+		this.pitchRad = pitch;
+		this.activate(canvas, vehicle);
+		await this.init(scene, spawnX, spawnZ, resolvedSurface, visualOptions);
+		if (typeof spawnY === 'number' && !explicitSurface) {
+			this.root.position.y = spawnY;
+		}
+	}
 
-		this.euler.set(this.pitch, this.yaw, 0, 'YXZ');
-		camera.quaternion.setFromEuler(this.euler);
+	despawn(scene?: THREE.Scene) {
+		this.spawnGeneration++;
+		this.deactivate();
+		if (scene) {
+			scene.remove(this.root);
+		}
+		this.reset();
+	}
 
-		return true;
+	async init(
+		scene: THREE.Scene,
+		spawnX: number,
+		spawnZ: number,
+		surface: SurfaceProvider = new FlatSurfaceProvider(0),
+		visualOptions: CharacterInstanceOptions = {
+			accentHex: 0xe6480d,
+			hideHeadForFirstPerson: true
+		}
+	) {
+		const gen = ++this.spawnGeneration;
+		this.root.parent?.remove(this.root);
+		this.root.visible = true;
+		this.isSeated = false;
+		this.velocityY = 0;
+		this.isGrounded = true;
+		this.isMoving = false;
+		this.clearCarriedItem();
+
+		if (this.characterVisual) {
+			this.root.remove(this.characterVisual);
+			this.characterVisual = null;
+			this.characterRig = null;
+		}
+
+		const hit = surface.sampleSurfaceAt(spawnX, spawnZ);
+		this.root.position.set(spawnX, hit.y, spawnZ);
+		this.root.name = 'EVA_Astronaut_Player';
+		scene.add(this.root);
+
+		if (!this.isActive) {
+			this.activate();
+		}
+
+		const visual = await characterModelLoader.createCharacterInstance(visualOptions);
+		if (gen !== this.spawnGeneration) return;
+
+		this.characterVisual = visual;
+		this.characterRig = (this.characterVisual.userData?.rig as CharacterRigRefs) ?? null;
+		this.root.add(this.characterVisual);
+	}
+
+	activate(canvas?: HTMLCanvasElement | null, vehicle: VehicleCameraDelegate | null = null) {
+		this.isActive = true;
+		this.activeVehicle = vehicle;
+
+		const resolvedCanvas = canvas ?? this.canvasEl ?? document.querySelector('canvas');
+		this.attachCanvas(resolvedCanvas);
+
+		if (!this.listenersAttached) {
+			window.addEventListener('mousemove', this.boundMouseMove);
+			window.addEventListener('keydown', this.boundKeyDown);
+			window.addEventListener('keyup', this.boundKeyUp);
+			window.addEventListener('blur', this.boundBlur);
+			document.addEventListener('pointerlockchange', this.boundPointerLockChange);
+			this.listenersAttached = true;
+		}
+
+		if (this.canvasEl && this.boundCanvasTarget !== this.canvasEl) {
+			this.canvasEl.addEventListener('click', this.boundCanvasClick);
+			this.boundCanvasTarget = this.canvasEl;
+		}
+	}
+
+	deactivate() {
+		this.isActive = false;
+		this.isSeated = false;
+		this.isMoving = false;
+		this.activeVehicle = null;
+		this.ownKeys.clear();
+		this.root.visible = true;
+		if (this.canvasEl && document.pointerLockElement === this.canvasEl) {
+			document.exitPointerLock?.();
+		}
+		this.isPointerLocked = false;
+		if (this.listenersAttached) {
+			window.removeEventListener('mousemove', this.boundMouseMove);
+			window.removeEventListener('keydown', this.boundKeyDown);
+			window.removeEventListener('keyup', this.boundKeyUp);
+			window.removeEventListener('blur', this.boundBlur);
+			document.removeEventListener('pointerlockchange', this.boundPointerLockChange);
+			this.listenersAttached = false;
+		}
+		if (this.boundCanvasTarget) {
+			this.boundCanvasTarget.removeEventListener('click', this.boundCanvasClick);
+			this.boundCanvasTarget = null;
+		}
 	}
 
 	dispose() {
 		this.despawn();
-		this.canvas?.removeEventListener('click', this.boundCanvasClick);
-		window.removeEventListener('keydown', this.boundKeyDown);
-		window.removeEventListener('keyup', this.boundKeyUp);
-		window.removeEventListener('blur', this.boundBlur);
-		document.removeEventListener('mousemove', this.boundMouseMove);
-		document.removeEventListener('pointerlockchange', this.boundPointerLockChange);
+		this.canvasEl = null;
+	}
+
+	setPhysics(physics: Partial<PlayerPhysicsConfig>) {
+		this.physics = { ...this.physics, ...physics };
+	}
+
+	clearCarriedItem() {
+		this.carryingCrate = null;
+		this.carryingItemName = null;
+	}
+
+	setSeatedPose(seated: boolean) {
+		this.isSeated = seated;
+		if (!this.characterRig) return;
+
+		const {
+			pelvis,
+			spine,
+			leftThigh,
+			rightThigh,
+			leftCalf,
+			rightCalf,
+			leftUpperArm,
+			rightUpperArm,
+			leftForearm,
+			rightForearm,
+			restRotations,
+			restPositions
+		} = this.characterRig;
+
+		if (seated) {
+			if (pelvis) {
+				const p = restPositions.get(pelvis);
+				pelvis.position.y = (p?.y ?? 0.84) - 0.34;
+			}
+			if (spine) spine.rotation.x = THREE.MathUtils.degToRad(-10);
+			if (leftThigh) leftThigh.rotation.x = THREE.MathUtils.degToRad(-86);
+			if (rightThigh) rightThigh.rotation.x = THREE.MathUtils.degToRad(-86);
+			if (leftCalf) leftCalf.rotation.x = THREE.MathUtils.degToRad(88);
+			if (rightCalf) rightCalf.rotation.x = THREE.MathUtils.degToRad(88);
+			if (leftUpperArm) {
+				leftUpperArm.rotation.x = THREE.MathUtils.degToRad(-48);
+				leftUpperArm.rotation.z = THREE.MathUtils.degToRad(14);
+			}
+			if (rightUpperArm) {
+				rightUpperArm.rotation.x = THREE.MathUtils.degToRad(-52);
+				rightUpperArm.rotation.z = THREE.MathUtils.degToRad(-18);
+			}
+			if (leftForearm) leftForearm.rotation.x = THREE.MathUtils.degToRad(-24);
+			if (rightForearm) rightForearm.rotation.x = THREE.MathUtils.degToRad(-28);
+		} else {
+			for (const [joint, rot] of restRotations) {
+				joint.rotation.copy(rot);
+			}
+			for (const [joint, pos] of restPositions) {
+				joint.position.copy(pos);
+			}
+		}
+	}
+
+	reset() {
+		this.yawRad = Math.PI;
+		this.pitchRad = 0.0;
+		this.velocityY = 0;
+		this.walkCycle = 0;
+		this.bobAmount = 0;
+		this.isGrounded = true;
+		this.isMoving = false;
+		this.isSeated = false;
+		this.ownKeys.clear();
+		this.root.visible = true;
+		this.clearCarriedItem();
+		this.root.parent?.remove(this.root);
+		this.root.clear();
+		this.characterVisual = null;
+		this.characterRig = null;
+	}
+
+	pickUpOrDropCrate(
+		crates: THREE.Object3D[],
+		scene: THREE.Scene,
+		surface: SurfaceProvider,
+		options?: PlayerCrateInteractOptions
+	): string | null {
+		const activeVehicle = options?.vehicle ?? null;
+		const interactRadius = options?.interactionRadius ?? 2.8;
+		const deliverRadius = options?.deliverRadius ?? 3.8;
+
+		if (this.carryingCrate) {
+			const heldCrate = this.carryingCrate;
+
+			const nearbyZone =
+				options?.zoneProvider?.findDropOffZoneNear(this.root.position, deliverRadius, true) ?? null;
+			const nearVehicle = activeVehicle?.isNearCargoRack(this.root.position) ?? false;
+
+			let preferVehicle = nearVehicle;
+			if (nearVehicle && nearbyZone && activeVehicle?.vehicleObject) {
+				const distToZone = Math.hypot(
+					this.root.position.x - nearbyZone.position.x,
+					this.root.position.z - nearbyZone.position.z
+				);
+				const distToVehicle = this.root.position.distanceTo(activeVehicle.vehicleObject.position);
+				preferVehicle = distToVehicle <= distToZone;
+			}
+
+			if (preferVehicle && activeVehicle) {
+				this.clearCarriedItem();
+				const result = activeVehicle.tryPlaceCrateFromPlayer(heldCrate, scene, surface);
+				return result.message;
+			}
+
+			const dropPos = nearbyZone
+				? nearbyZone.position.clone()
+				: new THREE.Vector3(0, 0, 1.35)
+						.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.root.rotation.y)
+						.add(this.root.position);
+			const hit = surface.sampleSurfaceAt(dropPos.x, dropPos.z);
+
+			scene.attach(heldCrate);
+			heldCrate.position.set(dropPos.x, hit.y + 0.39, dropPos.z);
+			heldCrate.rotation.set(0, nearbyZone ? 0 : this.root.rotation.y, 0);
+
+			const droppedName = heldCrate.name;
+			this.clearCarriedItem();
+			return `Placed ${droppedName}`;
+		}
+
+		let closest: THREE.Object3D | null = null;
+		let bestDist = interactRadius;
+		const cratePos = new THREE.Vector3();
+
+		for (const crate of crates) {
+			if (crate.userData?.delivered) continue;
+			if (activeVehicle?.isCrateFalling(crate)) continue;
+			if (crate === activeVehicle?.loadedCrate) continue;
+			crate.getWorldPosition(cratePos);
+			const d = cratePos.distanceTo(this.root.position);
+			if (d < bestDist) {
+				bestDist = d;
+				closest = crate;
+			}
+		}
+
+		if (
+			!closest &&
+			activeVehicle?.loadedCrate &&
+			activeVehicle.isNearCargoRack(this.root.position)
+		) {
+			const taken = activeVehicle.takeLoadedCrateForPlayer();
+			if (taken) {
+				this.root.attach(taken);
+				taken.position.set(0, 0.92, 0.78);
+				taken.rotation.set(0, 0, 0);
+				this.carryingCrate = taken;
+				this.carryingItemName = taken.name;
+				return `Took ${taken.name} from Rover rear rack`;
+			}
+		}
+
+		if (closest) {
+			this.root.attach(closest);
+			closest.position.set(0, 0.92, 0.78);
+			closest.rotation.set(0, 0, 0);
+			this.carryingCrate = closest;
+			this.carryingItemName = closest.name;
+			return `Carrying ${closest.name}`;
+		}
+
+		return null;
+	}
+
+	private hasInput(
+		externalKeys: Set<string> | null | undefined,
+		code: string,
+		fallbackKey?: string
+	): boolean {
+		if (this.ownKeys.has(code)) return true;
+		if (externalKeys) {
+			if (externalKeys.has(code)) return true;
+			if (
+				fallbackKey &&
+				(externalKeys.has(fallbackKey) || externalKeys.has(fallbackKey.toUpperCase()))
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	update(
+		dt: number,
+		keysOrSurface?: Set<string> | SurfaceProvider | null,
+		surfaceOrCollisions?: SurfaceProvider | CollisionWorld | null,
+		collisions?: CollisionWorld | null,
+		vehicleObj: THREE.Object3D | null = null
+	) {
+		if (this.isSeated) {
+			this.isMoving = false;
+			return;
+		}
+
+		let externalKeys: Set<string> | null = null;
+		let resolvedSurface: SurfaceProvider = new FlatSurfaceProvider(0);
+		let resolvedCollisions: CollisionWorld | null = collisions ?? null;
+
+		if (keysOrSurface instanceof Set) {
+			externalKeys = keysOrSurface;
+			if (surfaceOrCollisions && 'sampleSurfaceAt' in surfaceOrCollisions) {
+				resolvedSurface = surfaceOrCollisions;
+			}
+		} else if (
+			keysOrSurface &&
+			typeof keysOrSurface === 'object' &&
+			'sampleSurfaceAt' in keysOrSurface
+		) {
+			resolvedSurface = keysOrSurface;
+			if (surfaceOrCollisions && !('sampleSurfaceAt' in surfaceOrCollisions)) {
+				resolvedCollisions = surfaceOrCollisions;
+			}
+		} else if (surfaceOrCollisions && 'sampleSurfaceAt' in surfaceOrCollisions) {
+			resolvedSurface = surfaceOrCollisions;
+		}
+
+		const {
+			walkSpeed,
+			sprintSpeed,
+			jumpVelocity,
+			gravity,
+			colliderRadius,
+			colliderHeight,
+			boundsXZ
+		} = this.physics;
+
+		this.root.rotation.y = this.yawRad;
+
+		let forwardInput = 0;
+		let strafeInput = 0;
+		if (this.hasInput(externalKeys, 'KeyW', 'w') || this.hasInput(externalKeys, 'ArrowUp')) {
+			forwardInput += 1;
+		}
+		if (this.hasInput(externalKeys, 'KeyS', 's') || this.hasInput(externalKeys, 'ArrowDown')) {
+			forwardInput -= 1;
+		}
+		if (this.hasInput(externalKeys, 'KeyA', 'a') || this.hasInput(externalKeys, 'ArrowLeft')) {
+			strafeInput -= 1;
+		}
+		if (this.hasInput(externalKeys, 'KeyD', 'd') || this.hasInput(externalKeys, 'ArrowRight')) {
+			strafeInput += 1;
+		}
+
+		const forward = new THREE.Vector3(Math.sin(this.yawRad), 0, Math.cos(this.yawRad));
+		const right = new THREE.Vector3(-forward.z, 0, forward.x);
+
+		const moveDir = new THREE.Vector3()
+			.addScaledVector(forward, forwardInput)
+			.addScaledVector(right, strafeInput);
+		const moving = moveDir.lengthSq() > 0.001;
+		this.isMoving = moving;
+
+		if (moving) {
+			moveDir.normalize();
+			const sprinting =
+				this.hasInput(externalKeys, 'ShiftLeft', 'shift') ||
+				this.hasInput(externalKeys, 'ShiftRight', 'shift');
+			const speed = sprinting ? sprintSpeed : walkSpeed;
+			this.root.position.x = THREE.MathUtils.clamp(
+				this.root.position.x + moveDir.x * speed * dt,
+				-boundsXZ,
+				boundsXZ
+			);
+			this.root.position.z = THREE.MathUtils.clamp(
+				this.root.position.z + moveDir.z * speed * dt,
+				-boundsXZ,
+				boundsXZ
+			);
+			this.walkCycle += dt * (speed * 2.1);
+		} else {
+			this.walkCycle = 0;
+		}
+
+		if (resolvedCollisions) {
+			resolvedCollisions.resolveHorizontal(this.root.position, colliderRadius, colliderHeight, {
+				vehicleObj,
+				includeVehicle: true,
+				ignoredObject: this.carryingCrate
+			});
+		}
+
+		if (this.hasInput(externalKeys, 'Space', ' ') && this.isGrounded) {
+			this.velocityY = jumpVelocity;
+			this.isGrounded = false;
+		}
+
+		const ground = resolvedSurface.sampleSurfaceAt(this.root.position.x, this.root.position.z);
+		this.velocityY -= gravity * dt;
+		this.root.position.y += this.velocityY * dt;
+
+		if (this.root.position.y <= ground.y) {
+			this.root.position.y = ground.y;
+			this.velocityY = 0;
+			this.isGrounded = true;
+		}
+
+		const targetBob = moving && this.isGrounded ? Math.abs(Math.sin(this.walkCycle)) * 0.038 : 0;
+		this.bobAmount = THREE.MathUtils.lerp(this.bobAmount, targetBob, Math.min(1, dt * 14));
+
+		if (this.characterVisual) {
+			this.characterVisual.position.y = this.bobAmount;
+		}
+
+		if (this.carryingCrate) {
+			this.carryingCrate.position.y = 0.92 + this.bobAmount * 0.65;
+		}
+
+		this.animateLimbs(moving);
+	}
+
+	private animateLimbs(isMoving: boolean) {
+		if (!this.characterRig || this.isSeated) return;
+		const {
+			leftUpperArm,
+			rightUpperArm,
+			leftForearm,
+			rightForearm,
+			leftThigh,
+			rightThigh,
+			restRotations
+		} = this.characterRig;
+
+		const swing = isMoving && this.isGrounded ? Math.sin(this.walkCycle) * 0.45 : 0;
+
+		if (leftThigh) {
+			const rest = restRotations.get(leftThigh);
+			leftThigh.rotation.x = (rest?.x ?? 0) + swing;
+		}
+		if (rightThigh) {
+			const rest = restRotations.get(rightThigh);
+			rightThigh.rotation.x = (rest?.x ?? 0) - swing;
+		}
+
+		if (this.carryingCrate) {
+			if (leftUpperArm) leftUpperArm.rotation.x = (restRotations.get(leftUpperArm)?.x ?? 0) - 0.72;
+			if (rightUpperArm)
+				rightUpperArm.rotation.x = (restRotations.get(rightUpperArm)?.x ?? 0) - 0.72;
+			if (leftForearm) leftForearm.rotation.x = (restRotations.get(leftForearm)?.x ?? 0) - 0.45;
+			if (rightForearm) rightForearm.rotation.x = (restRotations.get(rightForearm)?.x ?? 0) - 0.45;
+		} else {
+			if (leftUpperArm)
+				leftUpperArm.rotation.x = (restRotations.get(leftUpperArm)?.x ?? 0) - swing * 0.65;
+			if (rightUpperArm)
+				rightUpperArm.rotation.x = (restRotations.get(rightUpperArm)?.x ?? 0) + swing * 0.65;
+			if (leftForearm) leftForearm.rotation.x = (restRotations.get(leftForearm)?.x ?? 0) - 0.15;
+			if (rightForearm) rightForearm.rotation.x = (restRotations.get(rightForearm)?.x ?? 0) - 0.15;
+		}
+	}
+
+	updateCamera(_delta: number, camera: THREE.PerspectiveCamera): boolean {
+		if (!this.isActive || this.debugOrbitMode) return false;
+
+		if (this.activeVehicle?.isSeated) {
+			return this.activeVehicle.applyFirstPersonDriverCamera(camera, this.yawRad, this.pitchRad);
+		}
+
+		this.applyFirstPersonCamera(camera);
+		return true;
+	}
+
+	applyFirstPersonCamera(camera: THREE.PerspectiveCamera) {
+		const eyeOffset = new THREE.Vector3(
+			0,
+			this.physics.eyeHeight + this.bobAmount,
+			this.physics.eyeForwardOffset
+		).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yawRad);
+		camera.position.copy(this.root.position).add(eyeOffset);
+
+		const lookDir = new THREE.Vector3(
+			Math.sin(this.yawRad) * Math.cos(this.pitchRad),
+			Math.sin(this.pitchRad),
+			Math.cos(this.yawRad) * Math.cos(this.pitchRad)
+		);
+		camera.lookAt(camera.position.clone().add(lookDir));
 	}
 }
 

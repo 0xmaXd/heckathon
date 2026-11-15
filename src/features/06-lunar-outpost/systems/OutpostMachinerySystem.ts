@@ -1,17 +1,37 @@
 import * as THREE from 'three';
-import type { OutpostWorldBuilder } from './OutpostWorldBuilder';
+
+export interface OutpostMachineryNodes {
+	airlockDoor: THREE.Object3D | null;
+	iceDrillAuger: THREE.Object3D | null;
+	commDishes: THREE.Object3D[];
+	solarDustLayers: THREE.Object3D[];
+	sampleBeacons: Map<string, THREE.Mesh>;
+	dropOffZones: Array<{ beaconMesh: THREE.Mesh }>;
+	landerAssembly: THREE.Group | null;
+	landerAscentPlume: THREE.Mesh | null;
+}
 
 export class OutpostMachinerySystem {
-	private world!: OutpostWorldBuilder;
+	private nodes!: OutpostMachineryNodes;
 	private airlockOpen = false;
 	private airlockClosedZ = 0;
+	private launchSequenceTimer = 0;
 	private elapsed = 0;
 
-	init(world: OutpostWorldBuilder) {
-		this.world = world;
-		if (this.world.airlockDoor) {
-			this.airlockClosedZ = this.world.airlockDoor.position.z;
+	init(nodes: OutpostMachineryNodes) {
+		this.nodes = nodes;
+		this.launchSequenceTimer = 0;
+		if (this.nodes.airlockDoor) {
+			this.airlockClosedZ = this.nodes.airlockDoor.position.z;
 		}
+	}
+
+	triggerLanderLaunch(): boolean {
+		this.launchSequenceTimer = 0.01;
+		if (this.nodes.landerAscentPlume) {
+			this.nodes.landerAscentPlume.visible = true;
+		}
+		return true;
 	}
 
 	isAirlockOpen(): boolean {
@@ -19,21 +39,21 @@ export class OutpostMachinerySystem {
 	}
 
 	toggleAirlockDoor(): boolean {
-		if (!this.world.airlockDoor) return false;
+		if (!this.nodes.airlockDoor) return false;
 		this.airlockOpen = !this.airlockOpen;
 		return true;
 	}
 
 	isNearAirlock(pos: THREE.Vector3, radius = 5.0): boolean {
-		if (!this.world.airlockDoor) return false;
+		if (!this.nodes.airlockDoor) return false;
 		const doorWorld = new THREE.Vector3();
-		this.world.airlockDoor.getWorldPosition(doorWorld);
+		this.nodes.airlockDoor.getWorldPosition(doorWorld);
 		return pos.distanceTo(doorWorld) <= radius;
 	}
 
 	cleanNearbySolarPanel(pos: THREE.Vector3, radius = 5.2): boolean {
 		const dustPos = new THREE.Vector3();
-		for (const dust of this.world.solarDustLayers) {
+		for (const dust of this.nodes.solarDustLayers) {
 			if (!dust.visible) continue;
 			dust.getWorldPosition(dustPos);
 			if (pos.distanceTo(dustPos) <= radius) {
@@ -46,7 +66,7 @@ export class OutpostMachinerySystem {
 
 	hasDustyPanelNearby(pos: THREE.Vector3, radius = 5.2): boolean {
 		const dustPos = new THREE.Vector3();
-		for (const dust of this.world.solarDustLayers) {
+		for (const dust of this.nodes.solarDustLayers) {
 			if (!dust.visible) continue;
 			dust.getWorldPosition(dustPos);
 			if (pos.distanceTo(dustPos) <= radius) return true;
@@ -56,7 +76,7 @@ export class OutpostMachinerySystem {
 
 	getDustyPanelCount(): number {
 		let count = 0;
-		for (const dust of this.world.solarDustLayers) {
+		for (const dust of this.nodes.solarDustLayers) {
 			if (dust.visible) count++;
 		}
 		return count;
@@ -64,7 +84,7 @@ export class OutpostMachinerySystem {
 
 	triggerDustStorm(panelCount = 6) {
 		let dirtied = 0;
-		for (const dust of this.world.solarDustLayers) {
+		for (const dust of this.nodes.solarDustLayers) {
 			if (!dust.visible) {
 				dust.visible = true;
 				dirtied++;
@@ -76,32 +96,39 @@ export class OutpostMachinerySystem {
 	update(dt: number) {
 		this.elapsed += dt;
 
-		if (this.world.iceDrillAuger) {
-			this.world.iceDrillAuger.rotation.y += dt * 3.4;
+		if (this.nodes.iceDrillAuger) {
+			this.nodes.iceDrillAuger.rotation.y += dt * 3.4;
 		}
 
-		for (let i = 0; i < this.world.commDishes.length; i++) {
-			const dish = this.world.commDishes[i];
+		for (let i = 0; i < this.nodes.commDishes.length; i++) {
+			const dish = this.nodes.commDishes[i];
 			dish.rotation.y = Math.sin(this.elapsed * 0.25 + i * 0.9) * 0.14;
 		}
 
-		if (this.world.airlockDoor) {
+		if (this.nodes.airlockDoor) {
 			const targetZ = this.airlockClosedZ + (this.airlockOpen ? 1.85 : 0);
-			this.world.airlockDoor.position.z = THREE.MathUtils.lerp(
-				this.world.airlockDoor.position.z,
+			this.nodes.airlockDoor.position.z = THREE.MathUtils.lerp(
+				this.nodes.airlockDoor.position.z,
 				targetZ,
 				Math.min(1, dt * 5.0)
 			);
 		}
 
-		// Gentle faint-yellow skyward shimmer on sample and drop-off pillars
-		for (const beacon of this.world.sampleBeacons.values()) {
+		if (this.launchSequenceTimer > 0) {
+			this.launchSequenceTimer += dt;
+			if (this.nodes.landerAssembly) {
+				const ascentSpeed = Math.min(48, this.launchSequenceTimer * this.launchSequenceTimer * 3.8);
+				this.nodes.landerAssembly.position.y += ascentSpeed * dt;
+			}
+		}
+
+		for (const beacon of this.nodes.sampleBeacons.values()) {
 			if (!beacon.visible) continue;
 			const mat = beacon.material as THREE.MeshBasicMaterial;
 			mat.opacity = 0.18 + Math.sin(this.elapsed * 2.5) * 0.05;
 		}
 
-		for (const zone of this.world.dropOffZones) {
+		for (const zone of this.nodes.dropOffZones) {
 			if (!zone.beaconMesh.visible) continue;
 			const mat = zone.beaconMesh.material as THREE.MeshBasicMaterial;
 			mat.opacity = 0.16 + Math.sin(this.elapsed * 2.3) * 0.05;

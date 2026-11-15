@@ -1,0 +1,25 @@
+{
+	"outpostName": "Orion Moon Outpost",
+	"locationLabel": "Lunar South Pole — Shackleton Rim Sector",
+	"briefing": {
+		"speaker": "Commander Maya",
+		"dialogue": "Welcome to Orion Moon Outpost! First, help us resupply the base: hop into the Orion Rover with [E] or carry 6 Supply Crates from the landing zone to the Storage Pod drop ring."
+	},
+	"explorationStart": {
+		"speaker": "Geologist Leo",
+		"dialogue": "Resupply complete! Earth Mission Control needs 6 verified lunar samples—3 Metals (Titanium, Iron, Aluminum) and 3 Non-Metals (Oxygen Regolith, Silicon, Water-Ice). Scan them across the crater ridges and analyze them at the Geology Lab!"
+	},
+	"maintenanceAlert": {
+		"title": "Geologist Leo: Solar Array Dust Alert!",
+		"message": "Electrostatic lunar dust is coating our Solar Array! Walk up to dusty solar panels and press [E] to wipe them clean and keep your Geology Scanner at full power."
+	},
+	"finaleReady": {
+		"speaker": "Commander Maya",
+		"dialogue": "All 3 Metals and 3 Non-Metals are verified and sealed! Head over to the Orion Landing Pad and press [E] to trigger the Sample Return Launch back to Earth!"
+	},
+	"certificate": {
+		"title": "NASA Junior Planetary Geologist",
+		"subtitle": "Orion Moon Outpost — South Pole Sample Return Mission",
+		"citation": "Awarded for completing base resupply operations, operating the Orion Lunar Terrain Vehicle, and verifying 6 lunar In-Situ Resource Utilization (ISRU) samples."
+	}
+}

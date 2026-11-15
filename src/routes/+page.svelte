@@ -10,12 +10,14 @@
 	import { lockerRoomScene } from '../features/01-earth-locker-room/LockerRoomScene';
 	import { launchRoomScene } from '../features/02-earth-launch-room/LaunchRoomScene';
 	import { lunarLandingScene } from '../features/05-lunar-landing/LunarLandingScene';
+	import { lunarOutpostScene } from '../features/06-lunar-outpost/LunarOutpostScene';
 
 	let canvasElement: HTMLCanvasElement;
 
 	sceneManager.registerScene(1, lockerRoomScene);
 	sceneManager.registerScene(2, launchRoomScene);
 	sceneManager.registerScene(5, lunarLandingScene);
+	sceneManager.registerScene(6, lunarOutpostScene);
 
 	function handleDebugKeyDown(event: KeyboardEvent) {
 		if (!import.meta.env.DEV || !GameConfig.debug.enablePhaseJump) return;

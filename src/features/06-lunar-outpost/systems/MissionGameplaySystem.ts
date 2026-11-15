@@ -13,6 +13,23 @@ import type { OrionRoverSystem } from './OrionRoverSystem';
 import type { OutpostMachinerySystem } from './OutpostMachinerySystem';
 import type { OutpostWorldBuilder } from './OutpostWorldBuilder';
 
+interface LandingHandoffData {
+	siteName: string;
+	style: 'apollo' | 'artemis';
+	fuelRemainingPct: number;
+	touchdownTiltDeg: number;
+}
+
+function readLandingHandoff(): LandingHandoffData | null {
+	try {
+		const raw = sessionStorage.getItem('artemis_lunar_landing_handoff');
+		if (!raw) return null;
+		return JSON.parse(raw) as LandingHandoffData;
+	} catch {
+		return null;
+	}
+}
+
 export class MissionGameplaySystem {
 	public phase: OutpostPhase = 'resupply';
 	public activeDiscoveryCard: DiscoveryCardData | null = null;
@@ -24,15 +41,27 @@ export class MissionGameplaySystem {
 	private maintenanceActive = false;
 	private maintenanceTriggeredOnce = false;
 	private launchSequenceTimer = 0;
+	private handoffApplied = false;
 
 	dismissDiscoveryCard() {
 		this.activeDiscoveryCard = null;
 	}
 
+	private applyLandingHandoffIfPresent() {
+		if (this.handoffApplied) return;
+		this.handoffApplied = true;
+
+		const handoff = readLandingHandoff();
+		if (!handoff) return;
+
+		this.speaker = 'Commander Maya';
+		this.dialogue = `Orion Lander secured on the pad at ${handoff.siteName} (${handoff.style.toUpperCase()} GNC, ${handoff.fuelRemainingPct}% propellant remaining)! ${hudCopy.briefing.dialogue}`;
+	}
+
 	/** Handles primary [E] contextual action (outside Rover boarding) */
 	handleContextInteract(
 		actorPos: THREE.Vector3,
-		scene: THREE.Scene,
+		_scene: THREE.Scene,
 		world: OutpostWorldBuilder,
 		machinery: OutpostMachinerySystem
 	): boolean {
@@ -97,16 +126,19 @@ export class MissionGameplaySystem {
 			}
 		}
 
-		// 4. Trigger Sample Return Launch at the Orion Landing Pad
+		// 4. Trigger Sample Return Launch at Orion_Landing_Pad_NASALogo
 		if (
 			this.phase === 'finale_ready' &&
 			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
 		) {
 			this.phase = 'launched';
 			this.launchSequenceTimer = 0.01;
+			if (world.landerAscentPlume) {
+				world.landerAscentPlume.visible = true;
+			}
 			this.speaker = 'Mission Control';
 			this.dialogue =
-				'Ignition confirmed! Sample Return Vehicle ascending from Orion Moon Outpost back to Earth!';
+				'Ignition confirmed! Orion Lander ascending from Orion Landing Pad back to Earth orbit!';
 			return true;
 		}
 
@@ -129,6 +161,8 @@ export class MissionGameplaySystem {
 		solar: SolarCycleState,
 		isPointerLocked: boolean
 	): OutpostHudSnapshot {
+		this.applyLandingHandoffIfPresent();
+
 		const actorPos = rover.isSeated && rover.rover ? rover.rover.position : astronaut.root.position;
 
 		// Check Supply Crate delivery to Storage Pod Drop Ring
@@ -169,8 +203,21 @@ export class MissionGameplaySystem {
 			}
 		}
 
+		// Liftoff animation for OrionLander.glb from Orion_Landing_Pad_NASALogo
 		if (this.phase === 'launched' && this.launchSequenceTimer > 0) {
 			this.launchSequenceTimer += dt;
+			if (world.landerAssembly) {
+				const ascentSpeed = Math.min(48, this.launchSequenceTimer * this.launchSequenceTimer * 3.8);
+				world.landerAssembly.position.y += ascentSpeed * dt;
+			}
+			if (world.landerAscentPlume) {
+				world.landerAscentPlume.visible = true;
+				world.landerAscentPlume.scale.set(
+					0.95 + Math.random() * 0.25,
+					0.9 + Math.random() * 0.45,
+					0.95 + Math.random() * 0.25
+				);
+			}
 		}
 
 		const actionPrompt = this.computeActionPrompt(
@@ -258,7 +305,7 @@ export class MissionGameplaySystem {
 			this.phase === 'finale_ready' &&
 			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
 		) {
-			return 'Press [E] to Launch Sample Return Capsule to Earth!';
+			return 'Press [E] to Launch Orion Lander to Earth!';
 		}
 		if (this.phase === 'resupply') {
 			return astronaut.carryingCrate

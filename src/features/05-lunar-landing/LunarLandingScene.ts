@@ -22,6 +22,20 @@ import { descentGuidance } from './systems/DescentGuidance';
 import { LanderBuilder } from './systems/LanderBuilder';
 import { LunarTerrainManager } from './systems/LunarTerrainManager';
 
+export interface LunarLandingHandoffPayload {
+	siteIndex: number;
+	siteName: string;
+	style: LandingStyleId;
+	fuelRemainingPct: number;
+	touchdownTiltDeg: number;
+	padOffsetX: number;
+	padOffsetZ: number;
+	landedAt: number;
+}
+
+export const LUNAR_LANDING_HANDOFF_KEY = 'artemis_lunar_landing_handoff';
+const TOUCHDOWN_TRANSITION_DELAY_MS = 2000;
+
 const HANDLED_KEYS = new Set([
 	'KeyI',
 	'KeyM',
@@ -54,6 +68,14 @@ export class LunarLandingScene implements GameScene {
 	private currentRollRad = 0;
 	private currentPitchRad = 0;
 	private hdaAnnounced = false;
+	private touchdownOffsetX = 0;
+	private touchdownOffsetZ = 0;
+
+	private isSceneActive = false;
+	private blackoutTimer: ReturnType<typeof setTimeout> | null = null;
+	private switchSceneTimer: ReturnType<typeof setTimeout> | null = null;
+	private touchdownElapsedS = -1;
+	private transitionDispatched = false;
 
 	private boundKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
 	private boundKeyUp = (e: KeyboardEvent) => this.onKeyUp(e);
@@ -90,7 +112,75 @@ export class LunarLandingScene implements GameScene {
 		this.landerVisuals.init(this.scene);
 	}
 
+	private clearTransitionTimers() {
+		if (this.blackoutTimer !== null) {
+			clearTimeout(this.blackoutTimer);
+			this.blackoutTimer = null;
+		}
+		if (this.switchSceneTimer !== null) {
+			clearTimeout(this.switchSceneTimer);
+			this.switchSceneTimer = null;
+		}
+		this.touchdownElapsedS = -1;
+		this.transitionDispatched = false;
+	}
+
+	private scheduleTransitionToRoom06(immediate = false) {
+		this.clearTransitionTimers();
+		this.touchdownElapsedS = 0;
+
+		if (immediate) {
+			this.persistLandingHandoff();
+			hudStore.triggerBlackout(hudMeta.hud.blackoutMessage);
+			this.switchSceneTimer = setTimeout(() => this.executeSwitchToRoom06(), 600);
+			return;
+		}
+
+		// Fade screen at 1.3s and switch to Room 06 (06-lunar-outpost) at 2.0s after touching Orion_Landing_Pad_NASALogo
+		this.blackoutTimer = setTimeout(() => {
+			if (!this.isSceneActive) return;
+			hudStore.triggerBlackout(hudMeta.hud.blackoutMessage);
+		}, 1300);
+
+		this.switchSceneTimer = setTimeout(() => {
+			this.executeSwitchToRoom06();
+		}, TOUCHDOWN_TRANSITION_DELAY_MS);
+	}
+
+	private executeSwitchToRoom06() {
+		if (this.transitionDispatched) return;
+		this.transitionDispatched = true;
+		this.persistLandingHandoff();
+
+		// Sync missionStore directly to Phase 6 (avoid advancePhase() landing on Phase 2 if Phase 5 was jumped to)
+		const store = missionStore as unknown as {
+			phase?: number;
+			currentPhase?: number;
+			setPhase?: (phase: number) => void;
+			goToPhase?: (phase: number) => void;
+			advancePhase?: () => void;
+		};
+
+		if (typeof store.setPhase === 'function') {
+			store.setPhase(6);
+		} else if (typeof store.goToPhase === 'function') {
+			store.goToPhase(6);
+		} else if (typeof store.phase === 'number') {
+			if (store.phase === 5 && typeof store.advancePhase === 'function') {
+				store.advancePhase();
+			} else {
+				store.phase = 6;
+			}
+		} else if (typeof store.currentPhase === 'number') {
+			store.currentPhase = 6;
+		}
+
+		// Directly switch SceneManager to Room 06 (06-lunar-outpost)
+		sceneManager.switchScene(6);
+	}
+
 	private async spawnMission(style: LandingStyleId, siteIndex: number) {
+		this.clearTransitionTimers();
 		await physicsWorld.init(GameConfig.physics.gravityMoon);
 		physicsWorld.reset(GameConfig.physics.gravityMoon);
 		resetLunarLandingState(style, siteIndex);
@@ -99,7 +189,8 @@ export class LunarLandingScene implements GameScene {
 		const site = this.terrain.getActiveSite();
 		const [padX, padZ] = site.worldOffset;
 
-		physicsWorld.addFixedBox([2000, 1, 2000], [padX, -0.5, padZ]);
+		// Thin floor collider so top surface sits flush at y = 0.0 (footHeight reaches 0 on touchdown)
+		physicsWorld.addFixedBox([2000, 0.1, 2000], [padX, -0.05, padZ]);
 		for (const h of LunarLandingConfig.hazards) {
 			physicsWorld.addFixedBox(
 				[h.radius * 0.7, h.height * 0.5, h.radius * 0.7],
@@ -111,6 +202,8 @@ export class LunarLandingScene implements GameScene {
 		this.currentRollRad = 0;
 		this.currentPitchRad = 0;
 		this.hdaAnnounced = false;
+		this.touchdownOffsetX = 0;
+		this.touchdownOffsetZ = 0;
 
 		const [ox, oy, oz] = LunarLandingConfig.spawnOffset;
 		const spawnX = padX + ox;
@@ -144,6 +237,24 @@ export class LunarLandingScene implements GameScene {
 
 		this.configureHud();
 		hudStore.setComms(hudMeta.hud.comms.ready);
+	}
+
+	private persistLandingHandoff() {
+		const payload: LunarLandingHandoffPayload = {
+			siteIndex: lunarLandingState.siteIndex,
+			siteName: lunarLandingState.siteName,
+			style: lunarLandingState.style,
+			fuelRemainingPct: Math.round(lunarLandingState.fuelPct),
+			touchdownTiltDeg: lunarLandingState.tiltDeg,
+			padOffsetX: Number(this.touchdownOffsetX.toFixed(2)),
+			padOffsetZ: Number(this.touchdownOffsetZ.toFixed(2)),
+			landedAt: Date.now()
+		};
+		try {
+			sessionStorage.setItem(LUNAR_LANDING_HANDOFF_KEY, JSON.stringify(payload));
+		} catch {
+			// Ignore storage restrictions in private browsing
+		}
 	}
 
 	private configureHud() {
@@ -225,8 +336,7 @@ export class LunarLandingScene implements GameScene {
 					variant: 'success',
 					disabled: () => lunarLandingState.outcome !== 'landed',
 					onClick: () => {
-						hudStore.triggerBlackout(hudMeta.hud.blackoutMessage);
-						setTimeout(() => missionStore.advancePhase(), 1800);
+						this.scheduleTransitionToRoom06(true);
 					}
 				}
 			]
@@ -249,12 +359,15 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	onEnter() {
+		this.isSceneActive = true;
 		window.addEventListener('keydown', this.boundKeyDown, { capture: true });
 		window.addEventListener('keyup', this.boundKeyUp, { capture: true });
 		void this.spawnMission('artemis', 0);
 	}
 
 	onExit() {
+		this.isSceneActive = false;
+		this.clearTransitionTimers();
 		window.removeEventListener('keydown', this.boundKeyDown, { capture: true });
 		window.removeEventListener('keyup', this.boundKeyUp, { capture: true });
 		this.keys.clear();
@@ -434,8 +547,15 @@ export class LunarLandingScene implements GameScene {
 				forceX: activeForceX
 			});
 
-			if (footHeight <= 0.1 && vel.y <= 0.25) {
-				const padOffsetM = Math.hypot(pos.x - padX, pos.z - padZ);
+			const touchedSurface = footHeight <= 0.18 && vel.y <= 0.35;
+			const settledOnPad =
+				footHeight <= 0.65 && Math.abs(vel.y) <= 0.06 && Math.hypot(vel.x, vel.z) <= 0.25;
+
+			if (touchedSurface || settledOnPad) {
+				this.touchdownOffsetX = pos.x - padX;
+				this.touchdownOffsetZ = pos.z - padZ;
+				const padOffsetM = Math.hypot(this.touchdownOffsetX, this.touchdownOffsetZ);
+				const touchedNasaLogo = this.landerVisuals.isOnNasaLogoPad(pos.x, pos.z);
 				const result = descentGuidance.evaluateTouchdown(
 					lunarLandingState.style,
 					padOffsetM,
@@ -444,7 +564,7 @@ export class LunarLandingScene implements GameScene {
 					totalTiltDeg
 				);
 
-				// Seat footpads flush on the lunar surface and lock body to prevent post-touchdown sink
+				// Seat footpads flush on Orion_Landing_Pad_NASALogo and lock body
 				const flushY = terrainY + LunarLandingConfig.lander.touchdownFootY;
 				this.landerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
 				this.landerBody.setTranslation({ x: pos.x, y: flushY, z: pos.z }, true);
@@ -457,12 +577,16 @@ export class LunarLandingScene implements GameScene {
 				lunarLandingState.verticalVelMs = 0;
 				lunarLandingState.horizontalVelMs = 0;
 
-				if (result.success) {
+				const safeNasaPadTouch = touchedNasaLogo && Math.abs(vel.y) <= 6.0;
+
+				if (result.success || safeNasaPadTouch) {
 					lunarLandingState.outcome = 'landed';
 					this.currentRollRad = 0;
 					this.currentPitchRad = 0;
+					this.persistLandingHandoff();
 					sceneManager.shake(0.15, 0.3);
 					hudStore.setComms(hudMeta.hud.comms.landedSuccess);
+					this.scheduleTransitionToRoom06(false);
 				} else {
 					lunarLandingState.outcome = 'crashed';
 					lunarLandingState.failureReason = result.failures.join(' | ');
@@ -485,6 +609,15 @@ export class LunarLandingScene implements GameScene {
 			}
 		} else {
 			this.landerBody.resetForces(true);
+
+			// Frame-based 2.0s touchdown countdown backup
+			if (lunarLandingState.outcome === 'landed' && this.touchdownElapsedS >= 0) {
+				this.touchdownElapsedS += dt;
+				if (this.touchdownElapsedS >= TOUCHDOWN_TRANSITION_DELAY_MS / 1000) {
+					this.executeSwitchToRoom06();
+				}
+			}
+
 			const massStats = descentGuidance.computeMassStats(
 				lunarLandingState.style,
 				lunarLandingState.fuelPct

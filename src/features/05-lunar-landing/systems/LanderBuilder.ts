@@ -7,15 +7,18 @@ export class LanderBuilder {
 	public readonly rootGroup = new THREE.Group();
 	public readonly attitudePivot = new THREE.Group();
 	public readonly padGroup = new THREE.Group();
+	public readonly outpostGroup = new THREE.Group();
 	public readonly radarRing: THREE.Mesh;
 
 	private landerModelSlot = new THREE.Group();
+	private padDisc!: THREE.Mesh;
+	private padRing!: THREE.Mesh;
 	private mainPlume!: THREE.Mesh;
 	private dustRing!: THREE.Mesh;
 	private rcsLeftPlume!: THREE.Mesh;
 	private rcsRightPlume!: THREE.Mesh;
-	private hazardRings: THREE.Mesh[] = [];
-	private hazardMeshes: THREE.Mesh[] = [];
+	private nasaLogoNode: THREE.Object3D | null = null;
+	private nasaLogoRadius = 6.0;
 
 	constructor() {
 		this.radarRing = new THREE.Mesh(
@@ -43,20 +46,23 @@ export class LanderBuilder {
 
 	init(scene: THREE.Scene) {
 		this.buildLanderShell(scene);
-		this.loadOrionLanderModel();
-		this.buildLandingPadAndHazards(scene);
+		this.buildLandingPad(scene);
+		scene.add(this.outpostGroup);
 		scene.add(this.radarRing);
 		scene.add(this.dustRing);
+
+		void this.loadOrionLanderModel();
+		void this.loadOutpostEnvironmentModel();
 	}
 
 	private buildLanderShell(scene: THREE.Scene) {
 		this.rootGroup.add(this.attitudePivot);
 
-		// Lightweight fallback mesh shown only until /models/OrionLander.glb finishes loading
+		// Lightweight fallback mesh shown briefly until /models/OrionLander.glb finishes loading
 		this.landerModelSlot.add(this.buildFallbackLander());
 		this.attitudePivot.add(this.landerModelSlot);
 
-		// Main Descent Engine Plume (starts at nozzle exit y = -1.12)
+		// Main Descent Engine Plume (starts below nozzle exit)
 		this.mainPlume = new THREE.Mesh(
 			new THREE.ConeGeometry(0.55, 3.4, 16),
 			new THREE.MeshBasicMaterial({ color: 0x7cc8ff, transparent: true, opacity: 0.85 })
@@ -66,7 +72,7 @@ export class LanderBuilder {
 		this.mainPlume.visible = false;
 		this.attitudePivot.add(this.mainPlume);
 
-		// Lateral RCS Thruster Plumes (aligned with ESM Quad-RCS nozzles at y = 0.42)
+		// Lateral RCS Thruster Plumes
 		const rcsGeo = new THREE.ConeGeometry(0.14, 0.9, 10);
 		const rcsMat = new THREE.MeshBasicMaterial({
 			color: 0xffffff,
@@ -92,29 +98,115 @@ export class LanderBuilder {
 		scene.add(this.rootGroup);
 	}
 
-	private loadOrionLanderModel() {
+	/**
+	 * Loads `/models/OrionLander.glb` as the active descent spacecraft.
+	 */
+	private async loadOrionLanderModel() {
 		const loader = new GLTFLoader();
-		loader.load(
-			'/models/OrionLander.glb',
-			(gltf) => {
-				const model = gltf.scene;
-				model.updateMatrixWorld(true);
+		try {
+			const gltf = await loader.loadAsync('/models/OrionLander.glb');
+			const model = gltf.scene;
+			model.updateMatrixWorld(true);
 
-				// Ensure bottom of footpads sits cleanly at local y = -touchdownFootY (-1.45)
-				const box = new THREE.Box3().setFromObject(model);
-				if (!box.isEmpty()) {
-					const targetFootY = -LunarLandingConfig.lander.touchdownFootY;
-					model.position.y += targetFootY - box.min.y;
+			const box = new THREE.Box3().setFromObject(model);
+			if (!box.isEmpty()) {
+				const size = new THREE.Vector3();
+				box.getSize(size);
+
+				if (size.y > 0.05 && (size.y < 2.1 || size.y > 4.6)) {
+					const scale = 3.4 / size.y;
+					model.scale.multiplyScalar(scale);
+					model.updateMatrixWorld(true);
+					box.setFromObject(model);
 				}
 
-				this.landerModelSlot.clear();
-				this.landerModelSlot.add(model);
-			},
-			undefined,
-			() => {
-				// Keep procedural fallback if OrionLander.glb is not yet placed in static/models/
+				const center = new THREE.Vector3();
+				box.getCenter(center);
+
+				const targetFootY = -LunarLandingConfig.lander.touchdownFootY;
+				model.position.x -= center.x;
+				model.position.z -= center.z;
+				model.position.y += targetFootY - box.min.y;
 			}
-		);
+
+			model.traverse((obj) => {
+				if (obj instanceof THREE.Mesh) {
+					obj.castShadow = true;
+					obj.receiveShadow = true;
+				}
+			});
+
+			this.landerModelSlot.clear();
+			this.landerModelSlot.add(model);
+		} catch {
+			// Keep procedural fallback if /models/OrionLander.glb is unavailable
+		}
+	}
+
+	/**
+	 * Loads `/models/moon_outpost.glb` from Phase 06 into Phase 05 and aligns it
+	 * so `Orion_Landing_Pad_NASALogo` sits directly at the landing target `[padX, 0, padZ]`.
+	 */
+	private async loadOutpostEnvironmentModel() {
+		const loader = new GLTFLoader();
+		try {
+			const gltf = await loader.loadAsync('/models/moon_outpost.glb');
+			const outpost = gltf.scene;
+			outpost.updateMatrixWorld(true);
+
+			outpost.traverse((obj) => {
+				if (obj.name === 'Orion_LOLA_Crater_Terrain') {
+					obj.visible = false;
+				} else if (!obj.name.startsWith('Sample_') && /(rock|boulder|stone)/i.test(obj.name)) {
+					obj.visible = false;
+				} else if (obj instanceof THREE.Mesh) {
+					obj.receiveShadow = true;
+				}
+			});
+
+			const logoNode =
+				outpost.getObjectByName('Orion_Landing_Pad_NASALogo') ??
+				outpost.getObjectByName('Lander_Touchdown_Anchor');
+
+			if (logoNode) {
+				this.nasaLogoNode = logoNode;
+				const logoBox = new THREE.Box3().setFromObject(logoNode);
+				const logoCenter = new THREE.Vector3();
+				if (!logoBox.isEmpty()) {
+					logoBox.getCenter(logoCenter);
+					const logoSize = new THREE.Vector3();
+					logoBox.getSize(logoSize);
+					this.nasaLogoRadius = Math.max(6.0, Math.max(logoSize.x, logoSize.z) * 0.5 + 1.0);
+				} else {
+					logoNode.getWorldPosition(logoCenter);
+				}
+				outpost.position.set(-logoCenter.x, -logoCenter.y + 0.03, -logoCenter.z);
+			}
+
+			this.outpostGroup.clear();
+			this.outpostGroup.add(outpost);
+
+			if (this.padDisc) {
+				this.padDisc.visible = false;
+			}
+		} catch {
+			// Keep standalone landing pad if /models/moon_outpost.glb is unavailable
+		}
+	}
+
+	isOnNasaLogoPad(worldX: number, worldZ: number): boolean {
+		if (this.nasaLogoNode) {
+			this.nasaLogoNode.updateWorldMatrix(true, false);
+			const logoWorldPos = new THREE.Vector3();
+			this.nasaLogoNode.getWorldPosition(logoWorldPos);
+			if (Math.hypot(worldX - logoWorldPos.x, worldZ - logoWorldPos.z) <= this.nasaLogoRadius) {
+				return true;
+			}
+		}
+
+		const dx = worldX - this.padGroup.position.x;
+		const dz = worldZ - this.padGroup.position.z;
+		return Math.hypot(dx, dz) <= this.nasaLogoRadius;
 	}
 
 	private buildFallbackLander(): THREE.Group {
@@ -160,70 +252,38 @@ export class LanderBuilder {
 		return fallback;
 	}
 
-	private buildLandingPadAndHazards(scene: THREE.Scene) {
-		const padDisc = new THREE.Mesh(
+	private buildLandingPad(scene: THREE.Scene) {
+		this.padDisc = new THREE.Mesh(
 			new THREE.CylinderGeometry(4.8, 5.2, 0.14, 32),
 			new THREE.MeshStandardMaterial({ color: 0x263244, roughness: 0.7 })
 		);
-		padDisc.position.y = 0.07;
-		this.padGroup.add(padDisc);
+		this.padDisc.position.y = 0.07;
+		this.padGroup.add(this.padDisc);
 
-		const padRing = new THREE.Mesh(
+		this.padRing = new THREE.Mesh(
 			new THREE.RingGeometry(4.3, 4.7, 32),
 			new THREE.MeshBasicMaterial({ color: 0x34ce57, side: THREE.DoubleSide })
 		);
-		padRing.rotation.x = -Math.PI / 2;
-		padRing.position.y = 0.16;
-		this.padGroup.add(padRing);
+		this.padRing.rotation.x = -Math.PI / 2;
+		this.padRing.position.y = 0.16;
+		this.padGroup.add(this.padRing);
 
 		const { nodeName: padNodeName, ...padInspect } = hudMeta.inspectables.landingPad;
 		this.padGroup.name = padNodeName;
 		this.padGroup.userData.inspect = padInspect;
 		scene.add(this.padGroup);
-
-		const boulderMat = new THREE.MeshStandardMaterial({ color: 0x4b4d52, roughness: 1.0 });
-		const hazardRingMat = new THREE.MeshBasicMaterial({
-			color: 0xff4d4d,
-			side: THREE.DoubleSide,
-			transparent: true,
-			opacity: 0.85
-		});
-
-		for (const h of LunarLandingConfig.hazards) {
-			const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(h.radius, 1), boulderMat);
-			rock.scale.set(1, h.height / h.radius, 1);
-			this.hazardMeshes.push(rock);
-			scene.add(rock);
-
-			const ring = new THREE.Mesh(
-				new THREE.RingGeometry(h.radius + 0.3, h.radius + 0.65, 24),
-				hazardRingMat
-			);
-			ring.rotation.x = -Math.PI / 2;
-			ring.visible = false;
-			this.hazardRings.push(ring);
-			scene.add(ring);
-		}
 	}
 
 	positionSiteFixtures(padX: number, padZ: number) {
 		this.padGroup.position.set(padX, 0, padZ);
-
-		for (let i = 0; i < LunarLandingConfig.hazards.length; i++) {
-			const h = LunarLandingConfig.hazards[i];
-			const hx = padX + h.dx;
-			const hz = padZ + h.dz;
-			this.hazardMeshes[i]?.position.set(hx, h.height * 0.45, hz);
-			if (this.hazardRings[i]) {
-				this.hazardRings[i].position.set(hx, 0.14, hz);
-				this.hazardRings[i].visible = false;
-			}
-		}
+		this.outpostGroup.position.set(padX, 0, padZ);
 	}
 
 	setHazardRingsVisible(visible: boolean) {
-		for (const ring of this.hazardRings) {
-			ring.visible = visible;
+		if (this.padRing) {
+			(this.padRing.material as THREE.MeshBasicMaterial).color.setHex(
+				visible ? 0x38bdf8 : 0x34ce57
+			);
 		}
 	}
 

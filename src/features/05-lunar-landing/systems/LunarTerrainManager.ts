@@ -90,17 +90,17 @@ export class LunarTerrainManager {
 
 	/**
 	 * Deterministic selenographic heightfield h(x, z) seeded from GameConfig.seed.
-	 * Flattens smoothly inside the active landing pad clearing while generating
-	 * rolling ridges and impact craters across the surrounding terrain.
+	 * Keeps a wide flat clearing around Orion_Landing_Pad_NASALogo so the full
+	 * moon_outpost.glb complex sits cleanly on the surface without terrain clipping.
 	 */
 	getHeightAt(worldX: number, worldZ: number): number {
 		const site = this.getActiveSite();
 		const [padX, padZ] = site.worldOffset;
 		const distFromPad = Math.hypot(worldX - padX, worldZ - padZ);
 
-		// Smooth blend from 0 inside clearingRadiusM to 1 outside
-		const clearMin = site.clearingRadiusM * 0.65;
-		const clearMax = site.clearingRadiusM * 1.45;
+		const outpostClearingRadius = Math.max(site.clearingRadiusM, 95);
+		const clearMin = outpostClearingRadius * 0.85;
+		const clearMax = outpostClearingRadius * 1.35;
 		const flatMask = THREE.MathUtils.smoothstep(distFromPad, clearMin, clearMax);
 		if (flatMask <= 0.001) return 0;
 
@@ -125,10 +125,8 @@ export class LunarTerrainManager {
 
 			if (d < 1.35) {
 				if (d < 0.85) {
-					// Bowl depression
 					craterOffset = -2.2 * (1 - (d / 0.85) * (d / 0.85));
 				} else {
-					// Raised ejecta rim
 					const rimT = 1 - Math.abs(d - 1.05) / 0.3;
 					craterOffset = 0.65 * Math.max(0, rimT);
 				}

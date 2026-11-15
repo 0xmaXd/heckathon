@@ -1,3 +1,10 @@
+export interface LandingHazardConfig {
+	dx: number;
+	dz: number;
+	radius: number;
+	height: number;
+}
+
 export const LunarLandingConfig = {
 	spawnOffset: [-18, 42, 0] as [number, number, number],
 	initialVelocity: [2.8, -4.2, 0] as [number, number, number],
@@ -12,17 +19,12 @@ export const LunarLandingConfig = {
 		manualMaxSinkAdjustMs: 5.0
 	},
 	scale: {
-		gateWorldY: 22 // Below 22m world height, telemetry runs at true 1:1 meter scale
+		gateWorldY: 22
 	},
 	terrain: {
 		tileSize: 160,
 		tileSegments: 48,
-		gridRadius: 1 // 3x3 chunk grid = 480m x 480m rolling around the lander
+		gridRadius: 1
 	},
-	hazards: [
-		{ dx: -10.5, dz: -1.8, radius: 1.6, height: 1.0 },
-		{ dx: -6.2, dz: 2.0, radius: 1.3, height: 0.85 },
-		{ dx: 7.0, dz: -1.4, radius: 1.7, height: 1.1 },
-		{ dx: 12.2, dz: 1.6, radius: 2.0, height: 1.3 }
-	]
+	hazards: [] as LandingHazardConfig[]
 };

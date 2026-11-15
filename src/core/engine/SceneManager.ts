@@ -78,7 +78,10 @@ export class SceneManager {
 	init(canvasElement: HTMLCanvasElement) {
 		this.canvas = canvasElement;
 
-		this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+		this.renderer = new THREE.WebGLRenderer({
+			canvas: this.canvas,
+			antialias: true
+		});
 		this.renderer.setSize(window.innerWidth, window.innerHeight);
 		this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -197,6 +200,10 @@ export class SceneManager {
 	getCameraPosition(target = new THREE.Vector3()): THREE.Vector3 | null {
 		if (!this.camera) return null;
 		return this.camera.getWorldPosition(target);
+	}
+
+	public getCamera(): THREE.Camera | null {
+		return this.camera;
 	}
 
 	// Get the World point of the object

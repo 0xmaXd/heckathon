@@ -1,36 +1,79 @@
 {
 	"hud": {
-		"location": "EARTH // LAUNCH PAD 39A",
-		"objective": "Retract gantry, ignite engines, and clear atmosphere",
-		"panelTitle": "Launch Control",
+		"location": "KENNEDY SPACE CENTER // PAD 39B",
+		"objective": "Steps: [U] Undock -> [I] Ignite -> [SPACE] Blast Off -> [B] Drop Boosters",
+		"panelTitle": "Rocket & ISS Telemetry",
 		"telemetryLabels": {
-			"dock": "GANTRY DOCK",
-			"altitude": "ALTITUDE",
-			"atmosphere": "ATMOSPHERE"
+			"dock": "BRIDGE ARM",
+			"boosters": "BOOSTERS",
+			"altitude": "HEIGHT",
+			"atmosphere": "SKY LAYER",
+			"iss": "ISS LIVE"
 		},
 		"initialTelemetry": {
-			"GANTRY DOCK": "DOCKED",
-			"ALTITUDE": "0 km",
-			"ATMOSPHERE": "TROPOSPHERE"
+			"BRIDGE ARM": "LOCKED",
+			"BOOSTERS": "READY",
+			"HEIGHT": "0.0 km",
+			"SKY LAYER": "TROPOSPHERE",
+			"ISS LIVE": "CHECKING .env..."
 		},
-		"actions": {
-			"undock": "1. Undock Gantry",
-			"dock": "Re-Dock Gantry",
-			"ignite": "2. Ignite Main Engines",
-			"launch": "3. Release Clamps & Liftoff"
-		},
-		"blackoutMessage": "ATMOSPHERIC EXIT COMPLETE — ENTERING ORBIT..."
+		"blackoutMessage": "600 KM ORBIT REACHED! LAUNCH COMPLETE."
 	},
 	"inspectables": {
-		"rocket": {
-			"nodeName": "Ares_IV_Launch_Vehicle",
-			"name": "Ares-IV Heavy Booster",
-			"category": "Orbital Launch Vehicle",
-			"description": "Two-stage heavy-lift rocket configured for cislunar trajectory insertion.",
+		"boosters": {
+			"nodeName": "SLS_SRB",
+			"title": "Twin Rocket Boosters",
+			"subtitle": "Super Power for Blast Off!",
+			"whyThereTitle": "What do they do?",
+			"whyThereBody": "These two white boosters give over 75% of the push needed to blast off Earth!",
+			"whyDetachTitle": "Why drop them at 45 km?",
+			"whyDetachBody": "After 2 minutes they run out of fuel—we drop them so Orion can zoom fast to space!",
 			"specs": {
-				"Height": "45.0 m",
-				"Propellant": "LOX / RP-1",
-				"Target": "Exosphere (600 km)"
+				"Height": "177 ft",
+				"Power": "75% Push",
+				"Drop": "45 km"
+			}
+		},
+		"rocket": {
+			"nodeName": "SLS_Block1_Root",
+			"title": "SLS Rocket & Orion",
+			"subtitle": "Deep Space Exploration Vehicle",
+			"whyThereTitle": "Why is it orange?",
+			"whyThereBody": "Special orange foam keeps the super-cold fuel inside from boiling before launch!",
+			"whyDetachTitle": "Where are the solar wings?",
+			"whyDetachBody": "Orion keeps its 4 solar wings tucked safely inside during launch, then opens them in space!",
+			"specs": {
+				"Height": "322 ft",
+				"Crew": "4 Astronauts",
+				"Wings": "4 Solar"
+			}
+		},
+		"dock": {
+			"nodeName": "Mobile_Launcher_Root",
+			"title": "Launch Tower & Bridge",
+			"subtitle": "Astronaut Boarding Gate",
+			"whyThereTitle": "What is the White Room?",
+			"whyThereBody": "Astronauts walk across this bridge into Orion's hatch before launch!",
+			"whyDetachTitle": "Why swing away?",
+			"whyDetachBody": "The arms swing clear before blast off so the rocket doesn't bump the tower!",
+			"specs": {
+				"Tower": "380 ft",
+				"Clamps": "4 Locks",
+				"Status": "Ready"
+			}
+		},
+		"iss": {
+			"nodeName": "ISS_Live_Station",
+			"title": "International Space Station",
+			"subtitle": "Live Real-Time Orbital Telemetry",
+			"whyThereTitle": "Where is the ISS right now?",
+			"whyThereBody": "Tracked in real time using live orbital coordinates when VITE_NASA_API_KEY is configured in .env!",
+			"whyDetachTitle": "How fast does it orbit?",
+			"whyDetachBody": "The ISS travels at ~27,600 km/h (7.66 km/s) at ~418 km altitude, circling Earth every 90 minutes!",
+			"specs": {
+				"Altitude": "~418 km",
+				"Speed": "27,600 km/h",
+				"Orbit": "90 min"
 			}
 		}
 	}

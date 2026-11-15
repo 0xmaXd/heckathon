@@ -100,14 +100,23 @@ export class OrionRoverSystem {
 		if (!this.rover || !this.cargoSlot) return null;
 
 		if (this.loadedCrate) {
-			const sideDrop = new THREE.Vector3(2.2, 0, -0.5)
-				.applyQuaternion(this.rover.quaternion)
-				.add(this.rover.position);
+			// If parked at an active drop-off ring, unload directly onto that ring's center
+			const nearbyZone = world.findDropOffZoneNear(
+				this.rover.position,
+				LunarOutpostConfig.physics.crateDeliverRadius,
+				true
+			);
+
+			const sideDrop = nearbyZone
+				? nearbyZone.position.clone()
+				: new THREE.Vector3(2.2, 0, -0.5)
+						.applyQuaternion(this.rover.quaternion)
+						.add(this.rover.position);
 			const hit = world.sampleSurfaceAt(sideDrop.x, sideDrop.z);
 
 			scene.attach(this.loadedCrate);
 			this.loadedCrate.position.set(sideDrop.x, hit.y + 0.39, sideDrop.z);
-			this.loadedCrate.rotation.set(0, this.rover.rotation.y, 0);
+			this.loadedCrate.rotation.set(0, nearbyZone ? 0 : this.rover.rotation.y, 0);
 
 			const name = this.loadedCrate.name;
 			this.loadedCrate = null;
@@ -246,7 +255,6 @@ export class OrionRoverSystem {
 				this.rover.position.x = nextX;
 				this.rover.position.z = nextZ;
 
-				// Prevent Rover from driving through buildings, domes, tanks, or panels
 				collisions.resolveHorizontal(this.rover.position, 1.38, 1.8, {
 					includeRover: false,
 					ignoredCrate: this.loadedCrate

@@ -13,19 +13,19 @@ export interface AmbientBanterLine {
 export const ROOM_07_AMBIENT_BANTER: AmbientBanterLine[] = [
 	{
 		speaker: 'Commander Maya',
-		line: 'Seals on Room 07 airlock are holding at 101 kPa, Leo—even with the regolith you tracked in.'
+		line: 'Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock all need their supply crates before we start the survey.'
 	},
 	{
 		speaker: 'Geologist Leo',
-		line: 'Hey, that dust is 40% bound oxygen! Practically gold—though my visor filter disagrees.'
+		line: 'Any crate works for any station—just make sure you actually drop it off inside the glowing ring!'
 	},
 	{
 		speaker: 'Commander Maya',
-		line: 'Save the geology lecture for our new EVA specialist. They just suited up beside us.'
+		line: 'Good thing our new EVA specialist just suited up at Room 07. Talk with me [T] whenever you are ready for orders.'
 	},
 	{
 		speaker: 'Geologist Leo',
-		line: 'Copy that, Commander. Fresh Artemis suit looks sharp—ready to test it in one-sixth G!'
+		line: 'Once all 5 drop-offs are locked in, I will unlock the spectrometer markers for our 6 South Pole mineral samples!'
 	}
 ];
 
@@ -42,21 +42,38 @@ interface DialogueNodeDefinition {
 const MAYA_NODES: Record<string, DialogueNodeDefinition> = {
 	root_briefing: {
 		speaker: 'Commander Maya',
-		text: 'Welcome to Room 07 Staging at Orion Moon Outpost! Good to have another set of boots on the Shackleton Rim. Ready to get our supply line moving?',
+		text: 'Welcome to Room 07 Staging at Orion Moon Outpost! Your first mission is to pick up supply boxes and drop 1 box at each of our 5 designated stations: Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock.',
 		companionInterjection: {
 			speaker: 'Geologist Leo',
-			text: 'And once the crates are stowed, I have six crater sites dying for a spectrometer sweep!'
+			text: 'Any box can be taken to any of those 5 pads—just press [F] to drop it off inside each glowing ring!'
 		},
 		choices: [
-			{ id: 'c1', label: 'Give me the rundown on Orion Outpost.', nextNodeId: 'outpost_tour' },
-			{ id: 'c2', label: 'How are you and Leo holding up out here?', nextNodeId: 'crew_banter' },
-			{ id: 'c3', label: 'What are my immediate orders?', nextNodeId: 'orders_resupply' },
-			{ id: 'c4', label: 'On it—heading out on EVA now.', nextNodeId: null }
+			{
+				id: 'c1',
+				label: 'Accept Mission: Where are the 5 drop-off zones?',
+				nextNodeId: 'orders_resupply'
+			},
+			{ id: 'c2', label: 'Give me the rundown on Orion Outpost.', nextNodeId: 'outpost_tour' },
+			{ id: 'c3', label: 'Any rover driving tips for hauling boxes?', nextNodeId: 'rover_tips' },
+			{ id: 'c4', label: 'Copy, Commander! Starting the 5 drop-offs now.', nextNodeId: null }
+		]
+	},
+	root_resupply_active: {
+		speaker: 'Commander Maya',
+		text: 'Your supply mission is active! Check the top-right checklist for remaining stations—Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock. Drop a box [F] inside each remaining ring to complete all 5 drop-offs.',
+		companionInterjection: {
+			speaker: 'Geologist Leo',
+			text: 'You can carry boxes on foot with [F] or load them onto the Orion Rover with [F] after boarding [E].'
+		},
+		choices: [
+			{ id: 'c1', label: 'Remind me how the 5 drop-offs work.', nextNodeId: 'orders_resupply' },
+			{ id: 'c2', label: 'Any rover driving tips for hauling boxes?', nextNodeId: 'rover_tips' },
+			{ id: 'c3', label: 'Back to delivering boxes!', nextNodeId: null }
 		]
 	},
 	root_exploration: {
 		speaker: 'Commander Maya',
-		text: 'Solid haul on those supply crates. Now you are cleared for full crater exploration—watch your suit battery and keep an eye on Leo’s scanner telemetry.',
+		text: 'All 5 drop-off stations are stocked and online! Now you are cleared for full crater exploration—assist Leo with the 6 lunar mineral samples.',
 		companionInterjection: {
 			speaker: 'Geologist Leo',
 			text: 'Focus on the three metals and three non-metals, Specialist. Every sample counts!'
@@ -70,7 +87,7 @@ const MAYA_NODES: Record<string, DialogueNodeDefinition> = {
 	},
 	root_finale: {
 		speaker: 'Commander Maya',
-		text: 'All six ISRU samples are verified and sealed in the return canister! Head to the Orion Landing Pad whenever you are ready to trigger launch.',
+		text: 'All 5 supply drop-offs and all 6 ISRU samples are verified and sealed! Head to the Orion Landing Pad whenever you are ready to trigger launch.',
 		companionInterjection: {
 			speaker: 'Geologist Leo',
 			text: 'Houston is already clearing telemetry bandwidth for our South Pole data packet!'
@@ -81,12 +98,20 @@ const MAYA_NODES: Record<string, DialogueNodeDefinition> = {
 			{ id: 'c3', label: 'Heading to the Landing Pad now.', nextNodeId: null }
 		]
 	},
+	orders_resupply: {
+		speaker: 'Commander Maya',
+		text: 'Pick up any supply crate with [F] (or load it onto the Orion Rover) and carry it to: (1) Command Control, (2) Electricity / Power Station, (3) Storage Pod, (4) Geology Lab, and (5) Habitat Airlock. Press [F] inside each ring to drop it off—5 drop-offs completes the mission!',
+		choices: [
+			{ id: 'c1', label: 'Any rover driving tips for hauling boxes?', nextNodeId: 'rover_tips' },
+			{ id: 'c2', label: 'Understood. Delivering all 5 boxes now.', nextNodeId: null }
+		]
+	},
 	outpost_tour: {
 		speaker: 'Commander Maya',
-		text: 'You are standing outside Room 07—our primary EVA suit-up and airlock bay. West is the Orion LTV Rover and supply drop ring; north is the Geology Lab and Solar Array.',
+		text: 'You are standing at Room 07 Habitat Airlock. Nearby are Command Control, the Storage Pod, the Geology Lab, and the Electricity Reactor & Solar Array—all marked with glowing drop-off rings.',
 		companionInterjection: {
 			speaker: 'Geologist Leo',
-			text: 'Just remember to wipe electrostatic dust off the solar panels with [E] if my scanner dips!'
+			text: 'And remember to wipe electrostatic dust off the solar panels with [E] if my scanner dips!'
 		},
 		choices: [
 			{ id: 'c1', label: 'Any rover driving tips for the crater rim?', nextNodeId: 'rover_tips' },
@@ -96,7 +121,7 @@ const MAYA_NODES: Record<string, DialogueNodeDefinition> = {
 	},
 	rover_tips: {
 		speaker: 'Commander Maya',
-		text: 'Stick to the Sintered Regolith pads and compacted wheel ruts when hauling crates—loose crater dust cuts top speed by a third and drains battery three times faster.',
+		text: 'Board the Orion Rover with [E], drive next to any crate and press [F] to load it onto the cargo rack, then drive to a glowing drop ring and press [F] to unload and deliver it.',
 		choices: [
 			{ id: 'c1', label: 'Give me the rundown on Orion Outpost.', nextNodeId: 'outpost_tour' },
 			{ id: 'c2', label: 'Got it. Ready to roll.', nextNodeId: null }
@@ -113,30 +138,22 @@ const MAYA_NODES: Record<string, DialogueNodeDefinition> = {
 			{ id: 'c1', label: 'Give me the rundown on Orion Outpost.', nextNodeId: 'outpost_tour' },
 			{ id: 'c2', label: 'Haha, back to work you two.', nextNodeId: null }
 		]
-	},
-	orders_resupply: {
-		speaker: 'Commander Maya',
-		text: 'Board the Orion Rover with [E] or carry crates by hand with [F], and deliver all 6 Supply Crates to the orange drop ring by the Storage Pod.',
-		choices: [
-			{ id: 'c1', label: 'Any rover driving tips for the crater rim?', nextNodeId: 'rover_tips' },
-			{ id: 'c2', label: 'Understood. Moving crates now.', nextNodeId: null }
-		]
 	}
 };
 
 const LEO_NODES: Record<string, DialogueNodeDefinition> = {
 	root_default: {
 		speaker: 'Geologist Leo',
-		text: 'Hey! Good to see someone else wearing the new Mark-III EVA rig. I have been logging Shackleton Rim mineral spectra all morning—want the science brief?',
+		text: 'Hey! Good to see someone else wearing the new Mark-III EVA rig. Talk with Commander Maya right beside me to get your 5 box drop-off locations—once those are delivered, I have 6 lunar samples ready for you!',
 		companionInterjection: {
 			speaker: 'Commander Maya',
-			text: 'Keep it under ten minutes, Leo—we still have an orbital launch window to hit.'
+			text: 'Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock are waiting on those crates, Specialist.'
 		},
 		choices: [
 			{ id: 'c1', label: 'Tell me about the 6 ISRU samples.', nextNodeId: 'isru_guide' },
 			{ id: 'c2', label: 'What were you and Maya just talking about?', nextNodeId: 'dust_talk' },
 			{ id: 'c3', label: 'How do the Geology Lab & Scanner work?', nextNodeId: 'lab_tips' },
-			{ id: 'c4', label: 'Catch you after my sweep, Leo.', nextNodeId: null }
+			{ id: 'c4', label: 'Catch you after the deliveries, Leo.', nextNodeId: null }
 		]
 	},
 	root_dust_alert: {
@@ -195,6 +212,7 @@ export function getInitialDialogueNodeId(
 	if (npcId === 'maya') {
 		if (phase === 'finale_ready' || phase === 'launched') return 'root_finale';
 		if (phase === 'exploration') return 'root_exploration';
+		if (phase === 'resupply') return 'root_resupply_active';
 		return 'root_briefing';
 	}
 	return dustAlertActive ? 'root_dust_alert' : 'root_default';

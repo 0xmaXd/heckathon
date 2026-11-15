@@ -35,31 +35,69 @@
 				<p class="text-sm leading-relaxed text-slate-200">{hud.dialogue}</p>
 			</div>
 
-			<!-- Resupply & 6-Sample ISRU Checklist -->
+			<!-- Top-Right Corner: 5 Designated Box Drop-Off Locations & ISRU Checklist -->
 			<div
-				class="min-w-[270px] rounded-xl border border-slate-700/80 bg-slate-900/85 p-4 shadow-xl backdrop-blur-md"
+				class="min-w-[300px] rounded-xl border border-slate-700/80 bg-slate-900/85 p-4 shadow-xl backdrop-blur-md"
 			>
-				<div class="mb-2 text-xs font-bold tracking-wider text-slate-400 uppercase">
-					{#if hud.phase === 'resupply'}
-						Challenge 1: Base Resupply ({hud.cratesDelivered}/{hud.cratesRequired})
+				<div
+					class="mb-2 flex items-center justify-between gap-2 text-xs font-bold tracking-wider text-slate-400 uppercase"
+				>
+					{#if hud.phase === 'briefing' || hud.phase === 'resupply'}
+						<span>Supply Box Drop-Offs ({hud.cratesDelivered}/{hud.cratesRequired})</span>
+						<span
+							class="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-300"
+						>
+							{hud.carryingCrateName ? 'BOX READY' : 'ANY BOX'}
+						</span>
 					{:else}
-						Lunar ISRU Samples ({hud.samplesAnalyzedCount}/6 Verified)
+						<span>Lunar ISRU Samples ({hud.samplesAnalyzedCount}/6 Verified)</span>
 					{/if}
 				</div>
 
-				{#if hud.phase === 'resupply'}
-					<div class="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+				{#if hud.phase === 'briefing' || hud.phase === 'resupply'}
+					<div class="mb-2.5 h-2 w-full overflow-hidden rounded-full bg-slate-800">
 						<div
 							class="h-full bg-amber-400 transition-all duration-300"
 							style="width: {(hud.cratesDelivered / hud.cratesRequired) * 100}%"
 						></div>
 					</div>
-					<p class="mt-2 text-xs text-slate-300">
-						Haul crates via Orion Rover [E] or carry [F] to the orange drop ring near Storage Pod.
+
+					<div class="space-y-1.5 text-xs">
+						{#each hud.dropOffZones as zone (zone.id)}
+							<div class="flex items-center justify-between gap-3">
+								<div>
+									<span
+										class={zone.delivered
+											? 'font-medium text-emerald-400 line-through'
+											: 'font-medium text-slate-100'}
+									>
+										{zone.label}
+									</span>
+									<span class="ml-1.5 text-[11px] text-slate-400">• {zone.shortHint}</span>
+								</div>
+								<span
+									class={zone.delivered
+										? 'rounded bg-emerald-500/20 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300'
+										: 'rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-300'}
+								>
+									{zone.delivered ? 'DELIVERED ✓' : 'DROP OFF'}
+								</span>
+							</div>
+						{/each}
+					</div>
+
+					<p class="mt-2.5 border-t border-slate-800 pt-2 text-[11px] leading-snug text-slate-300">
+						{#if hud.carryingCrateName}
+							Carrying <strong class="text-amber-300">{hud.carryingCrateName}</strong> — go to any
+							<span class="text-amber-300">DROP OFF</span> ring & press <strong>[F]</strong> to drop.
+						{:else}
+							Take any box (<strong>[F]</strong> carry or <strong>[E]</strong> Rover) and drop it
+							<strong>[F]</strong> at all 5 locations.
+						{/if}
 					</p>
 				{:else}
 					<div class="space-y-1.5 text-xs">
-						{#each hud.samples as s (s)}
+						{#each hud.samples as s (s.id)}
 							<div class="flex items-center justify-between gap-2">
 								<span
 									class={s.analyzed
@@ -140,7 +178,7 @@
 				<strong>WASD</strong> Move •
 				<strong>{hud.isPointerLocked ? 'Mouse' : 'Click / Drag'}</strong>
 				Look • <strong>[T]</strong> Talk • <strong>[E]</strong> Interact / Drive •
-				<strong>[F]</strong> Carry
+				<strong>[F]</strong> Pick Up / Drop Box
 			</div>
 		</div>
 
@@ -245,7 +283,7 @@
 					<div
 						class="grid grid-cols-2 gap-2 rounded-xl border border-slate-700 bg-slate-900/90 p-4 text-left text-xs"
 					>
-						{#each hud.samples as s (s)}
+						{#each hud.samples as s (s.id)}
 							<div class="text-emerald-400">✓ {s.title}</div>
 						{/each}
 					</div>

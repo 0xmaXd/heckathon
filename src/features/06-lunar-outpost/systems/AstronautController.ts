@@ -34,14 +34,23 @@ export class AstronautController {
 		world: OutpostWorldBuilder
 	): string | null {
 		if (this.carryingCrate) {
-			const dropPos = new THREE.Vector3(0, 0, 1.45)
-				.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.root.rotation.y)
-				.add(this.root.position);
+			// If standing inside an active drop-off ring, drop directly onto that zone's center
+			const nearbyZone = world.findDropOffZoneNear(
+				this.root.position,
+				LunarOutpostConfig.physics.crateDeliverRadius,
+				true
+			);
+
+			const dropPos = nearbyZone
+				? nearbyZone.position.clone()
+				: new THREE.Vector3(0, 0, 1.35)
+						.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.root.rotation.y)
+						.add(this.root.position);
 			const hit = world.sampleSurfaceAt(dropPos.x, dropPos.z);
 
 			scene.attach(this.carryingCrate);
 			this.carryingCrate.position.set(dropPos.x, hit.y + 0.39, dropPos.z);
-			this.carryingCrate.rotation.set(0, this.root.rotation.y, 0);
+			this.carryingCrate.rotation.set(0, nearbyZone ? 0 : this.root.rotation.y, 0);
 
 			const droppedName = this.carryingCrate.name;
 			this.carryingCrate = null;
@@ -146,7 +155,6 @@ export class AstronautController {
 
 	applyFirstPersonCamera(camera: THREE.PerspectiveCamera) {
 		const bobY = Math.abs(Math.sin(this.walkCycle)) * 0.04;
-		// Positioned at z = 0.25 (just forward of the EVA helmet outer shell) so nothing clips first-person view
 		const eyeOffset = new THREE.Vector3(0, 1.66 + bobY, 0.25).applyAxisAngle(
 			new THREE.Vector3(0, 1, 0),
 			this.yawRad

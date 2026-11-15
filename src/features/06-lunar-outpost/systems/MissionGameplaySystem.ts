@@ -11,29 +11,10 @@ import type {
 import type { AstronautController } from './AstronautController';
 import type { OrionRoverSystem } from './OrionRoverSystem';
 import type { OutpostMachinerySystem } from './OutpostMachinerySystem';
-import type { OutpostWorldBuilder } from './OutpostWorldBuilder';
-
-interface LandingHandoffData {
-	siteName: string;
-	style: 'orion' | 'orion-trn';
-	fuelRemainingPct: number;
-	propellantRemainingKg?: number;
-	deltaVRemainingMs?: number;
-	touchdownTiltDeg: number;
-}
-
-function readLandingHandoff(): LandingHandoffData | null {
-	try {
-		const raw = sessionStorage.getItem('artemis_lunar_landing_handoff');
-		if (!raw) return null;
-		return JSON.parse(raw) as LandingHandoffData;
-	} catch {
-		return null;
-	}
-}
+import type { OutpostWorldBuilder, WorldDropOffZone } from './OutpostWorldBuilder';
 
 export class MissionGameplaySystem {
-	public phase: OutpostPhase = 'resupply';
+	public phase: OutpostPhase = 'briefing';
 	public activeDiscoveryCard: DiscoveryCardData | null = null;
 
 	private samples: DiscoveryCardData[] = structuredClone(LunarOutpostConfig.discoveryCards);
@@ -43,34 +24,28 @@ export class MissionGameplaySystem {
 	private maintenanceActive = false;
 	private maintenanceTriggeredOnce = false;
 	private launchSequenceTimer = 0;
-	private handoffApplied = false;
 
 	dismissDiscoveryCard() {
 		this.activeDiscoveryCard = null;
 	}
 
-	private applyLandingHandoffIfPresent() {
-		if (this.handoffApplied) return;
-		this.handoffApplied = true;
-
-		const handoff = readLandingHandoff();
-		if (!handoff) return;
-
-		const propText =
-			handoff.propellantRemainingKg !== undefined
-				? `${handoff.propellantRemainingKg.toLocaleString()} kg MON-3/MMH (${handoff.fuelRemainingPct}%)`
-				: `${handoff.fuelRemainingPct}% propellant`;
-
-		this.speaker = 'Commander Maya';
-		this.dialogue = `Orion MPCV secured on the pad at ${handoff.siteName} (${propText} remaining)! ${hudCopy.briefing.dialogue}`;
+	startResupplyMission() {
+		if (this.phase === 'briefing') {
+			this.phase = 'resupply';
+			this.speaker = 'Commander Maya';
+			this.dialogue =
+				'Orders active! Pick up any supply box [F] (or haul via Rover [E]) and drop 1 box at each of the 5 stations: Command Control, Electricity, Storage Pod, Geology Lab, and Habitat Airlock.';
+		}
 	}
 
+	/** Handles primary [E] contextual action (outside Rover boarding) */
 	handleContextInteract(
 		actorPos: THREE.Vector3,
 		_scene: THREE.Scene,
 		world: OutpostWorldBuilder,
 		machinery: OutpostMachinerySystem
 	): boolean {
+		// 1. Clean dusty solar panels if near one
 		if (machinery.cleanNearbySolarPanel(actorPos)) {
 			const remaining = machinery.getDustyPanelCount();
 			if (remaining === 0 && this.maintenanceActive) {
@@ -82,6 +57,7 @@ export class MissionGameplaySystem {
 			return true;
 		}
 
+		// 2. Collect nearby geological sample (when in exploration phase)
 		if (this.phase === 'exploration') {
 			const samplePos = new THREE.Vector3();
 			for (const sample of this.samples) {
@@ -102,6 +78,7 @@ export class MissionGameplaySystem {
 				}
 			}
 
+			// 3. Analyze collected samples at the Geology Workstation
 			if (
 				actorPos.distanceTo(world.workstationPos) <= LunarOutpostConfig.physics.workstationRadius
 			) {
@@ -129,6 +106,7 @@ export class MissionGameplaySystem {
 			}
 		}
 
+		// 4. Trigger Sample Return Launch at the Orion Landing Pad
 		if (
 			this.phase === 'finale_ready' &&
 			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
@@ -140,15 +118,50 @@ export class MissionGameplaySystem {
 			}
 			this.speaker = 'Mission Control';
 			this.dialogue =
-				'Ignition confirmed! Orion MPCV ascending from Orion Landing Pad back to Earth orbit!';
+				'Ignition confirmed! Sample Return Vehicle ascending from Orion Moon Outpost back to Earth!';
 			return true;
 		}
 
+		// 5. Toggle Airlock door
 		if (machinery.isNearAirlock(actorPos)) {
 			return machinery.toggleAirlockDoor();
 		}
 
 		return false;
+	}
+
+	private completeDropOffAtZone(
+		zone: WorldDropOffZone,
+		crate: THREE.Object3D,
+		scene: THREE.Scene,
+		world: OutpostWorldBuilder
+	) {
+		scene.attach(crate);
+		const hit = world.sampleSurfaceAt(zone.position.x, zone.position.z);
+		crate.position.set(zone.position.x, hit.y + 0.39, zone.position.z);
+		crate.rotation.set(0, 0, 0);
+		crate.userData.delivered = true;
+		crate.userData.deliveredZoneId = zone.id;
+
+		zone.delivered = true;
+		zone.deliveredCrateName = crate.name;
+		zone.beaconMesh.visible = false;
+		(zone.ringMesh.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
+
+		this.cratesDelivered = world.dropOffZones.filter((z) => z.delivered).length;
+
+		if (this.cratesDelivered >= LunarOutpostConfig.resupplyRequiredCount) {
+			this.phase = 'exploration';
+			this.speaker = 'Geologist Leo';
+			this.dialogue = hudCopy.explorationStart.dialogue;
+		} else {
+			const remainingNames = world.dropOffZones
+				.filter((z) => !z.delivered)
+				.map((z) => z.label)
+				.join(', ');
+			this.speaker = 'Commander Maya';
+			this.dialogue = `Box delivered to ${zone.label} (${this.cratesDelivered}/${LunarOutpostConfig.resupplyRequiredCount})! Remaining drop-offs: ${remainingNames}.`;
+		}
 	}
 
 	update(
@@ -162,43 +175,36 @@ export class MissionGameplaySystem {
 		solar: SolarCycleState,
 		isPointerLocked: boolean
 	): OutpostHudSnapshot {
-		this.applyLandingHandoffIfPresent();
-
 		const actorPos = rover.isSeated && rover.rover ? rover.rover.position : astronaut.root.position;
 
-		if (this.phase === 'resupply') {
+		// Auto-activate resupply phase if player picks up a crate or boards the rover directly
+		if (
+			this.phase === 'briefing' &&
+			(astronaut.carryingCrate !== null || rover.loadedCrate !== null || rover.isSeated)
+		) {
+			this.startResupplyMission();
+		}
+
+		// Any box can be taken anywhere, and dropping it off inside a designated zone completes that delivery
+		if (this.phase === 'briefing' || this.phase === 'resupply') {
 			const cratePos = new THREE.Vector3();
 			for (const crate of world.supplyCrates) {
 				if (crate.userData?.delivered) continue;
+				// Must be dropped off (not currently held by astronaut or strapped to rover)
+				if (crate === astronaut.carryingCrate || crate === rover.loadedCrate) continue;
+
 				crate.getWorldPosition(cratePos);
+				const targetZone = world.findDropOffZoneNear(
+					cratePos,
+					LunarOutpostConfig.physics.crateDeliverRadius,
+					true
+				);
 
-				if (
-					cratePos.distanceTo(world.resupplyDropPos) <=
-					LunarOutpostConfig.physics.crateDeliverRadius
-				) {
-					if (rover.loadedCrate === crate) rover.loadedCrate = null;
-					if (astronaut.carryingCrate === crate) astronaut.carryingCrate = null;
-
-					scene.attach(crate);
-					const col = this.cratesDelivered % 3;
-					const row = Math.floor(this.cratesDelivered / 3);
-					const destX = world.resupplyDropPos.x - 1.2 + col * 1.2;
-					const destZ = world.resupplyDropPos.z - 0.8 + row * 1.2;
-					const hit = world.sampleSurfaceAt(destX, destZ);
-
-					crate.position.set(destX, hit.y + 0.39, destZ);
-					crate.rotation.set(0, 0, 0);
-					crate.userData.delivered = true;
-					this.cratesDelivered++;
-
-					if (this.cratesDelivered >= LunarOutpostConfig.resupplyRequiredCount) {
-						this.phase = 'exploration';
-						this.speaker = 'Geologist Leo';
-						this.dialogue = hudCopy.explorationStart.dialogue;
-					} else {
-						this.speaker = 'Commander Maya';
-						this.dialogue = `Crate secured (${this.cratesDelivered}/${LunarOutpostConfig.resupplyRequiredCount})! Deliver the remaining supply crates to the Storage Pod ring.`;
+				if (targetZone) {
+					if (this.phase === 'briefing') {
+						this.phase = 'resupply';
 					}
+					this.completeDropOffAtZone(targetZone, crate, scene, world);
 				}
 			}
 		}
@@ -208,14 +214,6 @@ export class MissionGameplaySystem {
 			if (world.landerAssembly) {
 				const ascentSpeed = Math.min(48, this.launchSequenceTimer * this.launchSequenceTimer * 3.8);
 				world.landerAssembly.position.y += ascentSpeed * dt;
-			}
-			if (world.landerAscentPlume) {
-				world.landerAscentPlume.visible = true;
-				world.landerAscentPlume.scale.set(
-					0.95 + Math.random() * 0.25,
-					0.9 + Math.random() * 0.45,
-					0.95 + Math.random() * 0.25
-				);
 			}
 		}
 
@@ -233,6 +231,10 @@ export class MissionGameplaySystem {
 			? Math.max(40, Math.round(100 - dustyRemaining * 10))
 			: 100;
 
+		const carriedName = rover.isSeated
+			? (rover.loadedCrate?.name ?? null)
+			: (astronaut.carryingCrate?.name ?? null);
+
 		return {
 			phase: this.phase,
 			speaker: this.speaker,
@@ -240,7 +242,14 @@ export class MissionGameplaySystem {
 			actionPrompt,
 			cratesDelivered: this.cratesDelivered,
 			cratesRequired: LunarOutpostConfig.resupplyRequiredCount,
-			carryingCrateName: astronaut.carryingCrate?.name ?? null,
+			dropOffZones: world.dropOffZones.map((z) => ({
+				id: z.id,
+				label: z.label,
+				shortHint: z.shortHint,
+				delivered: z.delivered,
+				deliveredCrateName: z.deliveredCrateName
+			})),
+			carryingCrateName: carriedName,
 			samplesCollectedCount: this.samples.filter((s) => s.collected).length,
 			samplesAnalyzedCount: this.samples.filter((s) => s.analyzed).length,
 			samples: this.samples.map((s) => ({ ...s })),
@@ -267,14 +276,22 @@ export class MissionGameplaySystem {
 		machinery: OutpostMachinerySystem,
 		roverState: RoverHudState
 	): string | null {
+		const isSupplyPhase = this.phase === 'briefing' || this.phase === 'resupply';
+		const nearbyDropZone = isSupplyPhase
+			? world.findDropOffZoneNear(actorPos, LunarOutpostConfig.physics.crateDeliverRadius, true)
+			: null;
+
 		if (roverState.canBoard) {
 			return 'Press [E] to Drive Orion Moon Rover';
 		}
 		if (rover.isSeated) {
-			if (this.phase === 'resupply') {
-				return rover.loadedCrate
-					? 'Drive to Orange Drop Ring by Storage Pod • [F] Unload • [E] Exit'
-					: 'Press [F] near a Supply Crate to Load onto Rover • [E] Exit';
+			if (isSupplyPhase) {
+				if (rover.loadedCrate) {
+					return nearbyDropZone
+						? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
+						: 'Drive to any glowing drop-off ring (Command Control, Electricity, etc.) • [F] Drop';
+				}
+				return 'Drive near any Supply Box & press [F] to Load • [E] Exit Rover';
 			}
 			return 'WASD Drive • [L] Headlights • [E] Exit Rover';
 		}
@@ -304,12 +321,15 @@ export class MissionGameplaySystem {
 			this.phase === 'finale_ready' &&
 			actorPos.distanceTo(world.launchPadPos) <= LunarOutpostConfig.physics.launchPadRadius
 		) {
-			return 'Press [E] to Launch Orion MPCV to Earth!';
+			return 'Press [E] to Launch Sample Return Capsule to Earth!';
 		}
-		if (this.phase === 'resupply') {
-			return astronaut.carryingCrate
-				? 'Carry Crate to Orange Drop Ring by Storage Pod • [F] Place'
-				: 'Press [F] to Pick Up Supply Crate (or [E] at Rover to Haul)';
+		if (isSupplyPhase) {
+			if (astronaut.carryingCrate) {
+				return nearbyDropZone
+					? `Press [F] to Drop Supply Box at ${nearbyDropZone.label}!`
+					: 'Take Box to Command Control, Electricity, Storage Pod, Lab, or Airlock • [F] Drop';
+			}
+			return 'Press [F] to Pick Up Supply Box (or [E] at Rover to Haul)';
 		}
 		if (machinery.isNearAirlock(actorPos)) {
 			return 'Press [E] to Toggle Airlock Hatch';

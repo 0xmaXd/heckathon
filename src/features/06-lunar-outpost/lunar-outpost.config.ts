@@ -1,4 +1,4 @@
-import type { DiscoveryCardData, SurfaceType } from './lunar-outpost.types';
+import type { DiscoveryCardData, DropOffZoneDefinition, SurfaceType } from './lunar-outpost.types';
 
 export const LunarOutpostConfig = {
 	modelUrl: '/models/moon_outpost.glb',
@@ -13,7 +13,7 @@ export const LunarOutpostConfig = {
 		interactionRadius: 4.6,
 		npcTalkRadius: 4.6,
 		npcAmbientRadius: 7.8,
-		crateDeliverRadius: 6.5,
+		crateDeliverRadius: 6.2,
 		workstationRadius: 5.5,
 		launchPadRadius: 9.0
 	},
@@ -37,7 +37,50 @@ export const LunarOutpostConfig = {
 		} satisfies Record<SurfaceType, number>
 	},
 
-	resupplyRequiredCount: 6,
+	resupplyRequiredCount: 5,
+
+	dropOffZoneDefinitions: [
+		{
+			id: 'command_control',
+			label: 'Command Control',
+			shortHint: 'Command Tower Plaza',
+			fallbackPos: [-12, 0, -16],
+			nodePatterns: [/Command_Tower_Base/i, /Command_Tower_Shaft/i, /Command_Tower/i],
+			offsetDistance: 3.6
+		},
+		{
+			id: 'electricity',
+			label: 'Electricity (Power Station)',
+			shortHint: 'Reactor & Solar Array',
+			fallbackPos: [18, 0, 12],
+			nodePatterns: [/Fission_Reactor_Core/i, /Solar_Mast_01/i, /Solar_Dust_Layer_01/i],
+			offsetDistance: 3.8
+		},
+		{
+			id: 'storage_pod',
+			label: 'Storage Pod',
+			shortHint: 'Cargo Depot Ring',
+			fallbackPos: [-22, 0, 14],
+			nodePatterns: [/Storage_Pod_Base/i, /Storage_Pod/i],
+			offsetDistance: 3.6
+		},
+		{
+			id: 'geology_lab',
+			label: 'Geology Lab',
+			shortHint: 'Science Workstation',
+			fallbackPos: [6.5, 0, -1.5],
+			nodePatterns: [/Geology_Workstation_Console/i, /Geology/i],
+			offsetDistance: 3.4
+		},
+		{
+			id: 'airlock',
+			label: 'Habitat Airlock',
+			shortHint: 'Room 07 Staging Bay',
+			fallbackPos: [11.5, 0, -29.5],
+			nodePatterns: [/Airlock_Outer_Door/i, /Dome_Habitat_Shell/i],
+			offsetDistance: 3.4
+		}
+	] satisfies DropOffZoneDefinition[],
 
 	discoveryCards: [
 		{

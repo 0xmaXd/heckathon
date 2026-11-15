@@ -14,13 +14,10 @@ interface OutpostNpcEntity {
 	name: 'Commander Maya' | 'Geologist Leo';
 	role: string;
 	root: THREE.Group;
-	mixer: THREE.AnimationMixer | null;
 	baseY: number;
 	baseYaw: number;
 	phaseOffset: number;
 }
-
-const DEFAULT_STAGING_POS = new THREE.Vector3(11.5, 0, -24.0);
 
 export class OutpostNpcSystem {
 	private npcs: OutpostNpcEntity[] = [];
@@ -28,18 +25,21 @@ export class OutpostNpcSystem {
 	private nearbyNpc: OutpostNpcEntity | null = null;
 	private ambientTimer = 0;
 	private ambientIndex = 0;
+	private onResupplyAssigned?: () => void;
 
 	public get isTalking(): boolean {
 		return this.activeTurn !== null;
 	}
 
-	async init(scene: THREE.Scene, world: OutpostWorldBuilder): Promise<void> {
+	async init(
+		scene: THREE.Scene,
+		world: OutpostWorldBuilder,
+		onResupplyAssigned?: () => void
+	): Promise<void> {
 		this.npcs = [];
 		this.activeTurn = null;
+		this.onResupplyAssigned = onResupplyAssigned;
 
-		characterModelLoader.registerOutpostScene(world.outpostRoot);
-
-		// Anchor right in front of the player's Room 07 spawn (11.5, -24.0)
 		const anchor = this.resolveRoom07Anchor(world);
 
 		const specs: Array<{
@@ -55,18 +55,18 @@ export class OutpostNpcSystem {
 				id: 'maya',
 				name: 'Commander Maya',
 				role: 'Mission Commander • Room 07',
-				offsetX: -1.45,
+				offsetX: -1.65,
 				offsetZ: -3.2,
-				accentHex: 0xdc2626, // Command Crimson
+				accentHex: 0xdc2626,
 				phaseOffset: 0.0
 			},
 			{
 				id: 'leo',
 				name: 'Geologist Leo',
 				role: 'Planetary Geologist • Room 07',
-				offsetX: 1.45,
-				offsetZ: -3.3,
-				accentHex: 0x0284c7, // Science Cyan
+				offsetX: 1.65,
+				offsetZ: -3.35,
+				accentHex: 0x0284c7,
 				phaseOffset: 1.7
 			}
 		];
@@ -84,8 +84,7 @@ export class OutpostNpcSystem {
 			meshGroup.name = `EVA_Astronaut_NPC_${spec.id}`;
 			meshGroup.position.set(x, hit.y, z);
 
-			// Face toward the Room 07 staging area / player spawn (+Z)
-			const baseYaw = Math.atan2(anchor.x - x, anchor.z - z);
+			const baseYaw = Math.atan2(anchor.x - x, anchor.z - 1.4 - z);
 			meshGroup.rotation.y = baseYaw;
 			scene.add(meshGroup);
 
@@ -94,7 +93,6 @@ export class OutpostNpcSystem {
 				name: spec.name,
 				role: spec.role,
 				root: meshGroup,
-				mixer: (meshGroup.userData.mixer as THREE.AnimationMixer | undefined) ?? null,
 				baseY: hit.y,
 				baseYaw,
 				phaseOffset: spec.phaseOffset
@@ -106,16 +104,15 @@ export class OutpostNpcSystem {
 		let foundAnchor: THREE.Vector3 | null = null;
 		world.outpostRoot?.traverse((obj) => {
 			if (foundAnchor) return;
-			// Only match actual room/bay names, never unrelated props ending in _07
-			if (/^(room|bay|module|airlock)[_\s-]*0?7\b/i.test(obj.name)) {
+			if (/07|room.?07|bay.?07/i.test(obj.name)) {
 				const pos = new THREE.Vector3();
 				obj.getWorldPosition(pos);
-				if (pos.distanceTo(DEFAULT_STAGING_POS) <= 16.0) {
+				if (pos.lengthSq() > 0.1) {
 					foundAnchor = pos;
 				}
 			}
 		});
-		return foundAnchor ?? DEFAULT_STAGING_POS.clone();
+		return foundAnchor ?? new THREE.Vector3(11.5, 0, -24.0);
 	}
 
 	public tryStartOrAdvanceDialogue(phase: OutpostPhase, dustAlertActive: boolean): boolean {
@@ -132,6 +129,12 @@ export class OutpostNpcSystem {
 		if (!this.nearbyNpc) return false;
 		const startNode = getInitialDialogueNodeId(this.nearbyNpc.id, phase, dustAlertActive);
 		this.activeTurn = buildDialogueTurn(this.nearbyNpc.id, startNode);
+
+		// Commander Maya assigns the 5-station supply box mission upon speaking with her
+		if (this.activeTurn && this.nearbyNpc.id === 'maya' && phase === 'briefing') {
+			this.onResupplyAssigned?.();
+		}
+
 		return this.activeTurn !== null;
 	}
 
@@ -139,6 +142,10 @@ export class OutpostNpcSystem {
 		if (!this.activeTurn) return false;
 		const choice = this.activeTurn.choices.find((c) => c.id === choiceId);
 		if (!choice) return false;
+
+		if (this.activeTurn.npcId === 'maya') {
+			this.onResupplyAssigned?.();
+		}
 
 		if (!choice.nextNodeId) {
 			this.closeDialogue();
@@ -193,8 +200,6 @@ export class OutpostNpcSystem {
 		let minAnyDist = Infinity;
 
 		for (const npc of this.npcs) {
-			npc.mixer?.update(dt);
-
 			const dist = npc.root.position.distanceTo(playerPos);
 			if (dist < minAnyDist) minAnyDist = dist;
 

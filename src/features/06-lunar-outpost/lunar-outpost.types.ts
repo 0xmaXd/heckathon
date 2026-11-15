@@ -7,6 +7,26 @@ export type SurfaceType =
 
 export type NpcId = 'maya' | 'leo';
 
+export type DropOffZoneId =
+	'command_control' | 'electricity' | 'storage_pod' | 'geology_lab' | 'airlock';
+
+export interface DropOffZoneDefinition {
+	id: DropOffZoneId;
+	label: string;
+	shortHint: string;
+	fallbackPos: [number, number, number];
+	nodePatterns: RegExp[];
+	offsetDistance: number;
+}
+
+export interface DropOffZoneHudStatus {
+	id: DropOffZoneId;
+	label: string;
+	shortHint: string;
+	delivered: boolean;
+	deliveredCrateName: string | null;
+}
+
 export interface NpcDialogueChoice {
 	id: string;
 	label: string;
@@ -79,6 +99,7 @@ export interface OutpostHudSnapshot {
 	actionPrompt: string | null;
 	cratesDelivered: number;
 	cratesRequired: number;
+	dropOffZones: DropOffZoneHudStatus[];
 	carryingCrateName: string | null;
 	samplesCollectedCount: number;
 	samplesAnalyzedCount: number;

@@ -99,5 +99,11 @@ export class OutpostMachinerySystem {
 			const mat = beacon.material as THREE.MeshBasicMaterial;
 			mat.opacity = 0.22 + Math.sin(this.elapsed * 2.8) * 0.08;
 		}
+
+		for (const zone of this.world.dropOffZones) {
+			if (!zone.beaconMesh.visible) continue;
+			const mat = zone.beaconMesh.material as THREE.MeshBasicMaterial;
+			mat.opacity = 0.18 + Math.sin(this.elapsed * 2.6) * 0.08;
+		}
 	}
 }

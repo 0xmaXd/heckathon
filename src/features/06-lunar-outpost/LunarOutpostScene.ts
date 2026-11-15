@@ -57,7 +57,9 @@ export class LunarOutpostScene implements GameScene, CameraController {
 			this.sunCycle.init(this.scene, this.world.lampPositions);
 			this.machinery.init(this.world);
 			await this.astronaut.init(this.scene, 11.5, -24.0, this.world);
-			await this.npcs.init(this.scene, this.world);
+			await this.npcs.init(this.scene, this.world, () => {
+				this.mission.startResupplyMission();
+			});
 			this.rover.init(this.world);
 
 			if (this.world.outpostRoot) {

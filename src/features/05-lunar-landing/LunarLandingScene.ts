@@ -1,4 +1,4 @@
-import type RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import sitesData from '#lib/assets/data/nasa/lunar_sites.json';
 import { GameConfig } from '../../config/game.config';
@@ -21,6 +21,20 @@ import {
 import { descentGuidance } from './systems/DescentGuidance';
 import { LanderBuilder } from './systems/LanderBuilder';
 import { LunarTerrainManager } from './systems/LunarTerrainManager';
+
+const HANDLED_KEYS = new Set([
+	'KeyI',
+	'KeyM',
+	'KeyW',
+	'KeyA',
+	'KeyS',
+	'KeyD',
+	'ArrowUp',
+	'ArrowDown',
+	'ArrowLeft',
+	'ArrowRight',
+	'Space'
+]);
 
 export class LunarLandingScene implements GameScene {
 	public scene: THREE.Scene;
@@ -50,10 +64,10 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	init() {
-		const ambientLight = new THREE.AmbientLight(0x9fb8de, 0.32);
+		const ambientLight = new THREE.AmbientLight(0x9fb8de, 0.42);
 		this.scene.add(ambientLight);
 
-		const sunLight = new THREE.DirectionalLight(0xffffff, 1.9);
+		const sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
 		sunLight.position.set(45, 70, 30);
 		this.scene.add(sunLight);
 
@@ -85,7 +99,7 @@ export class LunarLandingScene implements GameScene {
 		const site = this.terrain.getActiveSite();
 		const [padX, padZ] = site.worldOffset;
 
-		physicsWorld.addFixedBox([2000, 1, 2000], [padX, -1, padZ]);
+		physicsWorld.addFixedBox([2000, 1, 2000], [padX, -0.5, padZ]);
 		for (const h of LunarLandingConfig.hazards) {
 			physicsWorld.addFixedBox(
 				[h.radius * 0.7, h.height * 0.5, h.radius * 0.7],
@@ -116,8 +130,8 @@ export class LunarLandingScene implements GameScene {
 			LunarLandingConfig.lander.halfExtents,
 			{
 				mass: LunarLandingConfig.lander.massKg,
-				restitution: 0.05,
-				friction: 0.9,
+				restitution: 0.0,
+				friction: 0.95,
 				linearDamping: 0.0
 			}
 		);
@@ -235,14 +249,14 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	onEnter() {
-		window.addEventListener('keydown', this.boundKeyDown);
-		window.addEventListener('keyup', this.boundKeyUp);
+		window.addEventListener('keydown', this.boundKeyDown, { capture: true });
+		window.addEventListener('keyup', this.boundKeyUp, { capture: true });
 		void this.spawnMission('artemis', 0);
 	}
 
 	onExit() {
-		window.removeEventListener('keydown', this.boundKeyDown);
-		window.removeEventListener('keyup', this.boundKeyUp);
+		window.removeEventListener('keydown', this.boundKeyDown, { capture: true });
+		window.removeEventListener('keyup', this.boundKeyUp, { capture: true });
 		this.keys.clear();
 		this.landerBody = null;
 		hudStore.reset();
@@ -273,7 +287,17 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	private onKeyDown(event: KeyboardEvent) {
+		if (HANDLED_KEYS.has(event.code)) {
+			if (document.activeElement instanceof HTMLElement) {
+				document.activeElement.blur();
+			}
+			event.preventDefault();
+			event.stopPropagation();
+		}
+
 		this.keys.add(event.code);
+
+		if (event.repeat) return;
 
 		if (event.code === 'KeyI') {
 			this.igniteEngine();
@@ -283,12 +307,17 @@ export class LunarLandingScene implements GameScene {
 	}
 
 	private onKeyUp(event: KeyboardEvent) {
+		if (HANDLED_KEYS.has(event.code)) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
 		this.keys.delete(event.code);
 	}
 
 	update(delta: number): SceneFrameFeedback {
 		if (!this.landerBody) return {};
 
+		const dt = Math.min(delta, 0.05);
 		const pos = this.landerBody.translation();
 		const vel = this.landerBody.linvel();
 		const site = this.terrain.getActiveSite();
@@ -351,7 +380,7 @@ export class LunarLandingScene implements GameScene {
 				lunarLandingState.throttlePct = Math.round(guidance.throttleRatio * 100);
 				lunarLandingState.fuelPct = Math.max(
 					0,
-					lunarLandingState.fuelPct - (0.3 + guidance.throttleRatio * 1.1) * delta
+					lunarLandingState.fuelPct - (0.3 + guidance.throttleRatio * 1.1) * dt
 				);
 			} else {
 				lunarLandingState.throttlePct = 0;
@@ -360,12 +389,12 @@ export class LunarLandingScene implements GameScene {
 			this.currentRollRad = THREE.MathUtils.lerp(
 				this.currentRollRad,
 				guidance.desiredRollRad,
-				Math.min(1, delta * 5.5)
+				Math.min(1, dt * 5.5)
 			);
 			this.currentPitchRad = THREE.MathUtils.lerp(
 				this.currentPitchRad,
 				guidance.desiredPitchRad,
-				Math.min(1, delta * 5.5)
+				Math.min(1, dt * 5.5)
 			);
 
 			const totalTiltDeg = Math.hypot(
@@ -415,7 +444,13 @@ export class LunarLandingScene implements GameScene {
 					totalTiltDeg
 				);
 
+				// Seat footpads flush on the lunar surface and lock body to prevent post-touchdown sink
+				const flushY = terrainY + LunarLandingConfig.lander.touchdownFootY;
 				this.landerBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+				this.landerBody.setTranslation({ x: pos.x, y: flushY, z: pos.z }, true);
+				this.landerBody.setBodyType(RAPIER.RigidBodyType.Fixed, true);
+				this.landerVisuals.rootGroup.position.set(pos.x, flushY, pos.z);
+
 				lunarLandingState.isIgnited = false;
 				lunarLandingState.throttlePct = 0;
 				lunarLandingState.altitudeM = 0;

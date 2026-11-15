@@ -25,11 +25,11 @@
 			"proceed": "Deploy to Lunar Surface"
 		},
 		"comms": {
-			"ready": "GNC ONLINE — Auto-Land active, or press [M] for Manual Assisted (W/S/A/D).",
+			"ready": "GNC ONLINE — Orion Auto-Land active, or press [M] for Manual Assisted (W/S/A/D).",
 			"manualEngaged": "MANUAL ASSISTED (P66 DAP): [W/S] Sink Rate • [A/D] Lateral Translate • DAP holds level.",
 			"autoEngaged": "AUTONOMOUS GNC ENGAGED — Computer tracking landing beacon.",
 			"hdaActive": "ALHAT LiDAR SCAN: Boulder hazards marked — diverting to clear touchdown pad.",
-			"landedSuccess": "CONTACT LIGHT — Engine stop. Lunar surface touchdown confirmed!",
+			"landedSuccess": "CONTACT LIGHT — Engine stop. Orion lunar surface touchdown confirmed!",
 			"crashed": "STRUCTURAL LIMIT EXCEEDED — Touchdown velocity or tilt outside safe envelope."
 		},
 		"blackoutMessage": "PRESSURIZING AIRLOCK — PREPARING LUNAR EVA..."
@@ -37,9 +37,9 @@
 	"inspectables": {
 		"lander": {
 			"nodeName": "Lunar_Descent_Lander",
-			"name": "Lunar Descent Module",
+			"name": "Orion Lunar Descent Lander",
 			"category": "Crewed Lunar Lander",
-			"description": "Deep-throttling descent stage with gimbaled main engine, 4-quad RCS thrusters, and Digital Autopilot.",
+			"description": "Orion Crew & Service Module mated to a deep-throttling lunar descent stage with 4-quad RCS thrusters and Digital Autopilot.",
 			"specs": {
 				"Gravity": "1.62 m/s² (Moon)",
 				"Autopilot": "3-Axis Rate-Hold DAP",

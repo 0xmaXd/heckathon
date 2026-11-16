@@ -64,3 +64,10 @@ Orbital control is in the scene manager, of course!
 There are some bugs, like two suns, and some ray cast issues.
 
 DEBUG commands are F2, and CTRL + 1, 2, 3, 4, 5, 6.
+
+## AI Assistance Disclosure
+
+In accordance with NASA Space Apps Challenge guidelines, the we utilized the following AI tools during the creation of this project:
+
+* **Google Gemini:** Used to generate initial Python scripts for Blender automation and asset generation workflows.
+* **Anthropic Claude:** Used for code debugging, refactoring, and troubleshooting logic across the repository.
